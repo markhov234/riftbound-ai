@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background-color: #0b0b0c;
+  color: #d4d4d4;
+  font-family: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Small caps HUD label used across the terminal UI. */
+.hud-label {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 10px;
+  color: #8a8a8a;
+}
+
+/* Board sizing scales with the viewport so it fills the screen without dead
+   margins on wide displays and stays usable on small ones. */
+.board-root {
+  --card-w: clamp(88px, 8.6vw, 134px); /* a hand card */
+  --unit-w: clamp(52px, 3.8vw, 74px); /* a base / AI-strip unit */
+  --unit-w-big: clamp(58px, 4.5vw, 86px); /* a unit at a battlefield */
+  --rune-w: clamp(34px, 2.9vw, 50px); /* a channeled rune chip */
+  --legend-w: clamp(74px, 6.6vw, 112px); /* legend / champion tile */
+  --pile-w: clamp(44px, 3.9vw, 62px); /* deck / trash / gear tile */
+  --bf-art-h: clamp(84px, 12vh, 156px); /* battlefield card image */
+  --pip: clamp(12px, 0.95vw, 18px); /* one score pip */
+  --side-w: clamp(240px, 19vw, 340px); /* log / preview rail */
+}
+
+/* Soft 3.5px corners across the UI — panels, cards, borders, controls. */
+.bg-panel,
+.bg-panel2,
+button,
+input,
+select,
+textarea,
+[class*='border-line'],
+[class*='border-accent'],
+[class*='border-danger'],
+[class*='border-[#'] {
+  border-radius: 3.5px;
+}
+/* Keep deliberately round shapes round (score pips, avatars, dots). */
+[class*='rounded-full'] {
+  border-radius: 9999px !important;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #0b0b0c;
+}
+::-webkit-scrollbar-thumb {
+  background: #3a3a3a;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #e8622c;
+}
