@@ -148,6 +148,11 @@ function place(s: string): string | null {
 type Rule = [RegExp, (m: RegExpMatchArray) => string | null]
 
 const EFFECTS: Rule[] = [
+  // ── Part 2.72: clauses reached through the ability-button labels ──
+  [/^ready (\d+) gear$/i, (m) => `장비 ${m[1]}개를 준비 상태로 되돌립니다`],
+  [/^ready a gear$/i, () => '장비 하나를 준비 상태로 되돌립니다'],
+  [/^\[add\] (:rb_[a-z0-9_]+:)$/i, (m) => `${m[1]}을 [Add]합니다`],
+  [/^units here have "(.+)"$/i, (m) => `여기 있는 유닛은 “${m[1]}”을 가집니다`],
   // ── Part 2.71: the recurring tail, measured with scripts/i18n-misses.mts ──
   [/^return (.+?) to (?:its|their) owner'?s hand$/i,
    (m) => { const t = target(m[1]); return t && `${obj(t)} 주인의 손으로 되돌립니다` }],
@@ -804,7 +809,7 @@ function withoutPeriod(s: string): [string, string] {
   return m ? [m[1].trim(), m[2]] : [s, '']
 }
 
-function translateEffect(s: string): string | null {
+export function translateEffect(s: string): string | null {
   const [body] = withoutPeriod(normaliseNumbers(s))
   for (const [re, fn] of EFFECTS) {
     const m = body.match(re)

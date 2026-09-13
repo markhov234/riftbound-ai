@@ -152,6 +152,7 @@ export const en = {
   'board.power': '✦ {n} power',
   'board.noCardsInHand': 'No cards in hand',
   'board.viewPiles': 'View trash & banished',
+  'board.aiRunesTip': "AI's rune pool — ready energy / runes channeled. Channeled runes are public, so this is what it can spend to react on your turn.",
   'board.viewAiPiles': 'View AI trash & banished',
 
   // control badges
@@ -548,6 +549,7 @@ export const ko: Record<StringKey, string> = {
   'board.power': '✦ 파워 {n}',
   'board.noCardsInHand': '손패 없음',
   'board.viewPiles': '내 무덤 · 추방 보기',
+  'board.aiRunesTip': 'AI의 룬 풀 — 사용 가능한 에너지 / 충전된 룬. 충전된 룬은 공개 정보이므로, 내 턴에 AI가 반응할 때 쓸 수 있는 양입니다.',
   'board.viewAiPiles': 'AI 무덤 · 추방 보기',
 
   // control badges

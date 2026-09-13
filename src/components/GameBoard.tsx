@@ -63,6 +63,7 @@ import {
   type DragPayload,
 } from './useDragDrop'
 import { useLocale, useT, type StringKey, type TFn } from '../i18n'
+import { abilityLabelKo, choiceLabelKo, targetLabelKo } from '../i18n/abilityText'
 import { logLineKo, showdownSummaryKo } from '../i18n/logText'
 
 interface Props {
@@ -274,7 +275,26 @@ function targetKindKey(kind: TargetSpec['kind']): StringKey {
   }
 }
 
+/**
+ * Korean for a compiler-generated label, falling back to the English.
+ *
+ * `ab.label` / `spec.label` / `choice.label` are built by the text→script
+ * compiler, so they are English wherever a card is. Everything else on the
+ * board translates, which left the *buttons* — the things you actually click —
+ * as the last English on screen.
+ */
+function useLabelKo(): (s: string | undefined, kind?: 'ability' | 'target' | 'choice') => string {
+  const { locale } = useLocale()
+  return (raw, kind = 'ability') => {
+    if (!raw) return ''
+    if (locale !== 'ko') return raw
+    const fn = kind === 'target' ? targetLabelKo : kind === 'choice' ? choiceLabelKo : abilityLabelKo
+    return fn(raw) ?? raw
+  }
+}
+
 export default function GameBoard({ initialState, onExit }: Props) {
+  const labelKo = useLabelKo()
   const t = useT()
   const [state, setState] = useState<GameState>(initialState)
   const [selectedCard, setSelectedCard] = useState<Card | null>(null)
@@ -1184,7 +1204,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
   // What the current target slot is for — "Choose an enemy unit to deal 3 damage".
   const targetPrompt = currentTarget
     ? t('notice.choose', { what: t(targetKindKey(currentTarget.spec.kind)) }) +
-      (currentTarget.spec.label ? ` ${currentTarget.spec.label}` : '')
+      (currentTarget.spec.label ? ` ${labelKo(currentTarget.spec.label, 'target')}` : '')
     : null
   // Hand-written card scripts don't tag intent, so fall back to the spec kind:
   // picking your own unit is (almost always) good for it, an enemy's is not.
@@ -1254,12 +1274,12 @@ export default function GameBoard({ initialState, onExit }: Props) {
           ? {
               tone: 'act',
               title: t('notice.chooseUnitTitle'),
-              body: t('notice.chooseUnitBody', { label: myChoice.label }),
+              body: t('notice.chooseUnitBody', { label: labelKo(myChoice.label, 'choice') }),
             }
           : // Every other choice kind (a card in hand, the trash, a keyword, a
             // confirm) used to raise no banner at all — its prompt lived only in
             // the modal, so a player looking at the board saw a frozen game.
-            { tone: 'act', title: t('notice.chooseTitle'), body: myChoice.label }
+            { tone: 'act', title: t('notice.chooseTitle'), body: labelKo(myChoice.label, 'choice') }
         : responding && state.pendingShowdown
           ? {
               tone: 'respond',
@@ -1361,7 +1381,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
   const availableMoves: { key: string; label: string }[] = (() => {
     if (!myPriority && !myChoice && !assigningDamage) return []
     const out: { key: string; label: string }[] = []
-    if (myChoice) out.push({ key: 'choice', label: myChoice.label })
+    if (myChoice) out.push({ key: 'choice', label: labelKo(myChoice.label, 'choice') })
     if (assigningDamage) out.push({ key: 'damage', label: t('moves.assign') })
 
     for (const c of player.hand) {
@@ -1399,7 +1419,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
   })()
 
   const hint = myChoice
-    ? myChoice.label
+    ? labelKo(myChoice.label, 'choice')
     : targeting
       ? (targetPrompt ?? t('board.chooseTargetFor', { name: targeting.card.name }))
       : selectedCard
@@ -1782,6 +1802,16 @@ export default function GameBoard({ initialState, onExit }: Props) {
                   ✋ {ai.hand.length} · 📚 {ai.mainDeck.length} · 🗑 {ai.trash.length}
                   {ai.banished.length > 0 && ` · ⚰ ${ai.banished.length}`}
                 </button>
+                {/* What the AI can spend. Channeled runes and the Rune Pool are
+                    public information (165), and without them on screen there
+                    is no way to judge whether an attack will be answered — you
+                    cannot plan around a reaction you cannot see coming. */}
+                <span className="flex items-center gap-1" title={t('board.aiRunesTip')}>
+                  <span className="text-accent">⚡{ai.runes.energy}</span>
+                  <span className="text-txtFaint">/</span>
+                  <span>🜲{ai.runes.channeled.length}</span>
+                  {ai.runes.power > 0 && <span className="text-gold">◈{ai.runes.power}</span>}
+                </span>
               </div>
               <div className="w-px self-stretch bg-line mx-1 shrink-0" />
               <span className="hud-label shrink-0">{t('board.plays')}</span>
@@ -2046,10 +2076,10 @@ export default function GameBoard({ initialState, onExit }: Props) {
                       send({ type: 'ACTIVATE_ABILITY', instanceId: 'legend:player', abilityIndex: i })
                     }
                   }}
-                  title={ab.label}
+                  title={labelKo(ab.label)}
                   className="mt-0.5 w-full text-micro px-1 py-0.5 border border-accentDim text-accent hover:bg-accent hover:text-black truncate text-left"
                 >
-                  ⚡ {ab.label}
+                  ⚡ {labelKo(ab.label)}
                 </button>
               ))}
           </div>
@@ -2503,7 +2533,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
             )}
           >
             {acceleratePaid ? '✓ ' : ''}
-            {activeOpt.label}
+            {labelKo(activeOpt.label, 'choice')}
           </button>
         )}
 
@@ -2537,10 +2567,10 @@ export default function GameBoard({ initialState, onExit }: Props) {
                 targetInstanceIds: [],
               })
             }}
-            title={ab.label}
+            title={labelKo(ab.label)}
             className="px-3 py-1.5 border border-accentDim text-accent text-tiny font-bold uppercase tracking-wide hover:bg-accent hover:text-black max-w-[220px] truncate"
           >
-            {ab.label}
+            {labelKo(ab.label)}
           </button>
         ))}
 
@@ -3537,6 +3567,11 @@ function RuneRail({
     },
   )
   chips.push(...pool.recycled.map((card) => ({ card, state: 'recycled' as const })))
+  // How far along each rune sits from the one before, as a fraction of a rune's
+  // width. Capped at 0.85 so a small pool still reads as separate cards, and
+  // shrunk past that so the whole strip never exceeds five rune-widths however
+  // many are channeled — the same trick the hand fan uses.
+  const step = Math.min(0.85, 4 / Math.max(1, chips.length - 1))
   return (
     // Laid out for the bottom-left of the hand band: the deck tile, then a
     // column holding the pool counters above the channeled runes. `items-end`
@@ -3562,6 +3597,11 @@ function RuneRail({
           never seen a Power counter. Both slots are always on screen now. */}
       <div className="flex items-center gap-1.5 shrink-0">
         <span className="hud-label shrink-0">{t('board.runePool')}</span>
+        {/* Ready / channeled. Overlapping runes are quick to read at a glance
+            but slow to count, so the count is printed. */}
+        <span className="text-micro text-txtDim tabular-nums shrink-0">
+          {pool.energy}/{pool.channeled.length}
+        </span>
         <div
           className="flex items-baseline gap-1 px-1.5 py-0.5 border border-accent/60 bg-accent/10 tabular-nums"
           title={t('rune.energyTip')}
@@ -3585,17 +3625,30 @@ function RuneRail({
           </span>
         </div>
       </div>
-      {/* Every channeled / recycled rune */}
-      <div className="flex flex-wrap content-end gap-1 max-h-[calc(var(--rune-w)*2.1)] overflow-y-auto">
+      {/* Every channeled / recycled rune, overlapping like a held fan.
+          A wrapping grid needed a scrollbar past about eight runes, and a rune
+          you have to scroll to find is a rune you forget you have. Overlapping
+          keeps the whole pool on one line at any count: the step shrinks as the
+          pool grows so the strip is always five rune-widths wide. Hovering
+          brings one to the front, and each stays individually clickable. */}
+      <div className="flex items-end min-w-0" style={{ height: 'calc(var(--rune-w) * 1.4)' }}>
         {chips.map((c, i) => (
-          <RuneChip
+          <div
             key={i}
-            card={c.card}
-            state={c.state}
-            onRecycle={
-              onRecycle && c.state !== 'recycled' ? () => onRecycle(c.card.id) : undefined
-            }
-          />
+            className="shrink-0 transition-transform duration-200 ease-calm hover:-translate-y-1.5 hover:z-20 focus-within:z-20"
+            style={{
+              marginLeft: i === 0 ? 0 : `calc(var(--rune-w) * -${(1 - step).toFixed(3)})`,
+              zIndex: i,
+            }}
+          >
+            <RuneChip
+              card={c.card}
+              state={c.state}
+              onRecycle={
+                onRecycle && c.state !== 'recycled' ? () => onRecycle(c.card.id) : undefined
+              }
+            />
+          </div>
         ))}
         {chips.length === 0 && (
           <span className="text-txtFaint text-micro self-end pb-1">{t('board.noRunes')}</span>
@@ -3671,8 +3724,9 @@ function ChoiceModal({
   onSubmit: () => void
 }) {
   const t = useT()
+  const labelKo = useLabelKo()
   return (
-    <Modal title={choice.label} onClose={onSubmit}>
+    <Modal title={labelKo(choice.label, 'choice')} onClose={onSubmit}>
       <p className="hud-label normal-case tracking-normal mb-4">
         {choice.kind === 'confirm'
           ? t('choice.optional')
