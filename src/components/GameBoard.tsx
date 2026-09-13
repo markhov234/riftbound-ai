@@ -2220,6 +2220,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
           className={clsx(
             'absolute inset-x-0 bottom-0 z-20 pointer-events-none flex items-end gap-3 px-4 pt-2 pb-2',
             'max-md:static max-md:pointer-events-auto max-md:pt-3 max-md:pb-4',
+            'max-md:[&_*]:pointer-events-auto',
             'bg-gradient-to-t from-black/55 via-black/30 to-transparent',
             // Hit-testing for a drop is `document.elementFromPoint`, and this
             // band floats over the base. While a card is in flight every part
@@ -2228,7 +2229,15 @@ export default function GameBoard({ initialState, onExit }: Props) {
             // and the drop is silently refused. A parent's `pointer-events:
             // none` does *not* survive a child setting `auto`, so the whole
             // subtree is switched, not just the wrapper.
-            dnd.drag ? '[&_*]:pointer-events-none' : '[&>*]:pointer-events-auto',
+            // Only the buttons take clicks — never their containers.
+            //
+            // `[&>*]` handed pointer events to the band's direct children, and
+            // one of those is the hand's centring box: 1556px wide on a desktop
+            // even when five cards occupy 500px of it. That invisible box sat
+            // over the whole base and swallowed every click meant for a unit
+            // underneath, so you could never select one to move it. The cards
+            // and the trash tile are the only things here that need input.
+            dnd.drag ? '[&_*]:pointer-events-none' : '[&_button]:pointer-events-auto',
           )}
         >
 
