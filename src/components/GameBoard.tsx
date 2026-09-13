@@ -1805,7 +1805,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
               </div>
             </div>
 
-            <div className="flex-1 flex items-stretch justify-center gap-[clamp(0.75rem,2.2vw,3rem)] px-[clamp(1rem,3vw,4rem)] min-h-[clamp(150px,24vh,340px)] max-h-[clamp(180px,44vh,470px)] py-2 max-md:flex-col max-md:max-h-none max-md:px-3 max-md:gap-3">
+            <div className="flex-1 flex items-stretch justify-center gap-[clamp(0.75rem,2.2vw,3rem)] px-[clamp(1rem,3vw,4rem)] min-h-[clamp(150px,24vh,340px)] max-h-[clamp(170px,36vh,380px)] py-2 max-md:flex-col max-md:max-h-none max-md:px-3 max-md:gap-3">
               {state.battlefields.map((bf) => {
                 const control = controllerOf(bf)
                 const dropCard = canDropCardAt(bf.index)
@@ -1868,7 +1868,12 @@ export default function GameBoard({ initialState, onExit }: Props) {
 
                     {/* Name + control badge */}
                     <div className="absolute inset-x-0 top-0 z-20 px-3 py-1.5 flex items-center justify-between gap-2 bg-black/75 border-b border-line/60">
-                      <span className="display-face text-sm text-txt truncate">{bf.name}</span>
+                      <span className="flex items-baseline gap-2 min-w-0">
+                        <span className="hud-label text-txtFaint shrink-0">
+                          {t('board.battlefieldN', { n: bf.index + 1 })}
+                        </span>
+                        <span className="display-face text-sm text-txt truncate">{bf.name}</span>
+                      </span>
                       <span
                         key={control}
                         className={clsx(
@@ -2107,14 +2112,14 @@ export default function GameBoard({ initialState, onExit }: Props) {
           <div
             {...dnd.zoneProps(BASE_ZONE, dragTargets(BASE_ZONE))}
             className={clsx(
-              'flex-[3_1_0%] min-w-0 self-stretch border px-2 py-1 transition-transform max-md:basis-full max-md:min-h-[84px]',
+              'flex-[3_1_0%] min-w-0 self-stretch border border-l-[3px] border-l-accent/70 px-2 py-1 transition-transform max-md:basis-full max-md:min-h-[84px]',
               dragTargets(BASE_ZONE) && dnd.drag?.over === BASE_ZONE
                 ? 'border-accentBright ring-2 ring-accentBright/70 bg-accent/20'
                 : dragTargets(BASE_ZONE)
                   ? 'border-accent border-dashed bg-accent/10'
                   : canDropCardAt('base') || (selectedUnit && myPriority)
                     ? 'border-accent bg-accent/10 cursor-pointer'
-                    : 'border-line/40 bg-black/10',
+                    : 'border-line/40 bg-accent/[0.04]',
               dnd.drag && !dragTargets(BASE_ZONE) && 'opacity-55',
             )}
             onClick={() => {
@@ -2122,7 +2127,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
               if (canDropCardAt('base') || (selectedUnit && myPriority)) onBaseClick()
             }}
           >
-            <span className="hud-label text-micro">{t('board.yourBase')}</span>
+            <span className="hud-label text-accent/80">{t('board.yourBase')}</span>
             <div className="flex gap-1.5 flex-wrap content-start mt-0.5 min-h-[var(--unit-w)]">
               {player.base.map((u) => (
                 <BoardUnit
@@ -2218,10 +2223,9 @@ export default function GameBoard({ initialState, onExit }: Props) {
         {/* Hand band — runes (left) · hand (centre, fans/overlaps) · deck & trash (right) */}
         <div
           className={clsx(
-            'absolute inset-x-0 bottom-0 z-20 pointer-events-none flex items-end gap-3 px-4 pt-2 pb-2',
-            'max-md:static max-md:pointer-events-auto max-md:pt-3 max-md:pb-4',
-            'max-md:[&_*]:pointer-events-auto',
-            'bg-gradient-to-t from-black/55 via-black/30 to-transparent',
+            'relative z-20 shrink-0 flex items-end gap-3 px-4 pt-2 pb-2',
+            'max-md:pt-3 max-md:pb-4',
+            'bg-black/20 border-t border-line/40',
             // Hit-testing for a drop is `document.elementFromPoint`, and this
             // band floats over the base. While a card is in flight every part
             // of the band has to be invisible to that test, or the pointer
@@ -2229,15 +2233,10 @@ export default function GameBoard({ initialState, onExit }: Props) {
             // and the drop is silently refused. A parent's `pointer-events:
             // none` does *not* survive a child setting `auto`, so the whole
             // subtree is switched, not just the wrapper.
-            // Only the buttons take clicks — never their containers.
-            //
-            // `[&>*]` handed pointer events to the band's direct children, and
-            // one of those is the hand's centring box: 1556px wide on a desktop
-            // even when five cards occupy 500px of it. That invisible box sat
-            // over the whole base and swallowed every click meant for a unit
-            // underneath, so you could never select one to move it. The cards
-            // and the trash tile are the only things here that need input.
-            dnd.drag ? '[&_*]:pointer-events-none' : '[&_button]:pointer-events-auto',
+            // The band no longer floats, so it covers nothing and needs no
+            // pointer-events games — except while dragging, when it must not
+            // intercept a drop aimed at a zone behind it.
+            dnd.drag && '[&_*]:pointer-events-none',
           )}
         >
 
@@ -3316,13 +3315,20 @@ function CastLane({
   onHover: (c: Card | null) => void
 }) {
   const t = useT()
-  const empty = stack.length === 0 && !pendingShowdown && !lastResolved
+  // The lane is the only way to click a chain item — to counter a spell, or to
+  // name one as a target — so it has to exist whenever a chain does. It does
+  // *not* have to hold a band across the board the rest of the time.
+  //
+  // `lastResolved` alone is not reason enough to stay open: it is cleared only
+  // at the start of a turn (phases.ts), so one resolution would pin the lane
+  // open for the remainder of that turn with nothing left to click. The log
+  // rail already records what resolved, in more detail and permanently.
+  if (stack.length === 0 && !pendingShowdown) return null
   const nameOf = (it: GameState['stack'][number]) =>
     it.card?.name ?? it.label.replace(/^(player|ai)'s\s+/i, '')
   return (
     <div className="px-4 py-1 border-t border-line bg-panel min-h-[30px] flex items-center gap-2 shrink-0 overflow-x-auto text-tiny">
       <span className="hud-label shrink-0">{t('board.castLane')}</span>
-      {empty && <span className="text-txtFaint">{t('board.nothingInPlay')}</span>}
 
       {pendingShowdown && (
         <span className="hud-label text-accent shrink-0">
