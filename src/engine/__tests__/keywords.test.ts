@@ -3,7 +3,7 @@ import { GameState, PlayerSide } from '../../types/game'
 import { resolveShowdown } from '../combat'
 import { createToken, gainXP, killUnit } from '../abilities/effects'
 import { emit } from '../events'
-import { showdownMight, keywordValue, isMighty, hasTemporary } from '../keywords'
+import { showdownMight, keywordValue, isMighty, hasTemporary, lethalMight } from '../keywords'
 import { beginTurn } from '../phases'
 import { setCardPool } from '../state'
 import { makeCard, placeUnitAt, startedGame } from './fixtures'
@@ -37,17 +37,75 @@ describe('showdownMight keyword rules', () => {
     expect(showdownMight({} as GameState, u, 'defender')).toBe(3)
   })
 
-  it('a Stunned unit contributes 0 Might', () => {
-    const u = inPlay(withText(['Stun']))
-    expect(showdownMight({} as GameState, u, 'attacker')).toBe(0)
-    const u2 = inPlay(withText([]))
-    u2.counters.stunned = 1
-    expect(showdownMight({} as GameState, u2, 'defender')).toBe(0)
+  it('a Stunned unit contributes 0 Might (423.1.b) — but only the *status* stuns', () => {
+    const stunned = inPlay(withText([]))
+    stunned.counters.stunned = 1
+    expect(showdownMight({} as GameState, stunned, 'defender')).toBe(0)
+
+    // `card.keywords` is scraped from bracket tokens, so a card that *inflicts*
+    // `[Stun]` (Vex - Apathetic) carries "Stun" in that array. Stunned is a
+    // status (423.1.a), never a keyword — reading it as one made every such
+    // unit contribute 0 Might in every combat.
+    const stunner = inPlay(
+      withText(['Deflect', 'Stun'], {
+        name: 'Vex - Apathetic',
+        might: 4,
+        text: "[Deflect] When an opponent plays a unit while I'm at a battlefield, [Stun] it.",
+      }),
+    )
+    expect(showdownMight({} as GameState, stunner, 'attacker')).toBe(4)
   })
 
   it('keywordValue sums instances', () => {
     expect(keywordValue(inPlay(withText(['Assault 2', 'Assault 1'])), 'Assault')).toBe(3)
     expect(keywordValue(inPlay(withText(['Deflect'])), 'Deflect')).toBe(1)
+  })
+
+  it('reads the printed X from the card text when `keywords` only has the bare name', () => {
+    // Real card data ships `keywords: ["Shield","Tank"]` — the 2 is only in the
+    // text. Reading it as Shield 1 made defenders die to sub-lethal damage.
+    const mouser = inPlay(
+      withText(['Shield', 'Tank'], {
+        name: 'Mutated Mouser',
+        might: 1,
+        text: "[Shield 2] (+2 :rb_might: while I'm a defender.)[Tank] (I must be assigned combat damage first.)",
+      }),
+    )
+    expect(keywordValue(mouser, 'Shield')).toBe(2)
+    expect(showdownMight({} as GameState, mouser, 'defender')).toBe(1 + 2)
+    expect(showdownMight({} as GameState, mouser, 'attacker')).toBe(1) // Shield is defence-only
+    // Might IS health, so lethal tracks the role exactly: 3 to kill it while it
+    // is defending, 1 anywhere else (a burn spell in the main phase).
+    expect(lethalMight(mouser, undefined, 'defender')).toBe(3)
+    expect(lethalMight(mouser, undefined, 'attacker')).toBe(1)
+    expect(lethalMight(mouser)).toBe(1)
+
+    // A granted keyword elsewhere in the text must NOT be read as static: the
+    // card has no "Assault" in `keywords`, so it stays at 0.
+    const granted = inPlay(
+      withText(['Ganking'], { text: 'When I become ready, give me [Assault 2] this turn.' }),
+    )
+    expect(keywordValue(granted, 'Assault')).toBe(0)
+  })
+
+  it('a Shield 2 defender survives damage equal to its printed Might', () => {
+    const mouser = makeCard({
+      name: 'Mutated Mouser',
+      type: 'unit',
+      domains: ['fury'],
+      energy: 2,
+      might: 1,
+      keywords: ['Shield', 'Tank'],
+      text: "[Shield 2] (+2 :rb_might: while I'm a defender.)",
+    })
+    const poro = makeCard({ name: 'Pouty Poro', type: 'unit', domains: ['fury'], energy: 2, might: 2 })
+    let s = startedGame({ firstPlayer: 'player' })
+    s = placeUnitAt(s, 'player', mouser, 0)
+    s = placeUnitAt(s, 'ai', poro, 0)
+
+    // The AI attacks: its 2 Might is not enough for a 1+2 defender.
+    const after = resolveShowdown(s, 0, 'ai')
+    expect(after.battlefields[0].units.filter((u) => u.owner === 'player')).toHaveLength(1)
   })
 
   it('isMighty is true at effective Might 5+', () => {

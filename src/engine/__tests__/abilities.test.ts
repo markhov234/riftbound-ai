@@ -168,7 +168,7 @@ describe('ability guards (when)', () => {
     s = { ...s, player: { ...s.player, runes: { ...s.player.runes, energy: 9 } } }
 
     // Legion Brute alone → no other card played → not buffed.
-    let solo = dispatch(s, { type: 'PLAY_UNIT', card: legionBrute, to: { kind: 'base' } }, 'player')
+    const solo = dispatch(s, { type: 'PLAY_UNIT', card: legionBrute, to: { kind: 'base' } }, 'player')
     expect(solo.player.base[0].counters.buffed ?? 0).toBe(0)
 
     // Play a card first, then Legion Brute → Legion active → buffed.

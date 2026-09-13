@@ -136,6 +136,13 @@ export interface Deck {
   cards: DeckEntry[] // main deck; quantities sum to 40 (incl. champion)
   /** Token pile — separate from the 40; the token types this deck's cards create. */
   tokens?: DeckEntry[]
+  /**
+   * Tournament sideboard — up to 10 cards since the July 2026 tournament rules
+   * update (it was 8 before). Recorded for fidelity to published decklists only:
+   * sideboarding happens *between games of a match*, and cards from it may not
+   * be used in game one, so a single game against the AI can never draw on it.
+   */
+  sideboard?: DeckEntry[]
   /** Preset decks are code-defined and never written to localStorage. */
   preset?: boolean
   createdAt: number

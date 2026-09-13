@@ -18,6 +18,7 @@ Legend: ✅ matches · 🟡 simplified on purpose (documented) · 🔧 diverges 
 | Mulligan | Recycle 0–2 cards (to bottom of deck), draw that many back | `doMulligan` — bottom-of-deck + redraw, cap `MAX_MULLIGAN = 2` | ✅ |
 | First turn | Player on the play **skips their first Draw step** | `beginTurn` skips the draw when `turn === 0` | ✅ |
 | Going second | Channels **3** runes on turn 1 instead of 2 | `beginTurn` `goingSecond` bonus (+1), `firstChannelBonusUsed` | ✅ |
+| Chosen Champion | Starts in the **Champion Zone** (not the deck); playable from there any time on your turn; does not return there once it leaves | `PlayerState.championZone`; `setup.ts` seeds it, `presetDecks` no longer shuffles a copy in; `playUnit` clears the zone + sets `championPlayed` | ✅ *(2.33)* |
 
 ## 2. Turn structure
 
@@ -34,7 +35,7 @@ showdowns → clean per-turn counters → `TURN_ENDED` → advance, `round = ⌊
 | Score Holds before Channel/Draw | yes | yes | ✅ |
 | Rune Pool empties each turn | yes (unspent energy is lost) | `refreshRunes` resets `energy = channeled.length`, `power = 0`, `spent = []` | ✅ (equivalent) |
 | Ramp | +2 channeled runes/turn, tap them all for energy | same (channeled runes persist, energy = count) | ✅ |
-| Max hand size | **7 at end of turn** (discard down) | `endTurn` → discard to `MAX_HAND_SIZE = 7` (human: interactive pause; AI: auto) | ✅ |
+| Max hand size | **none** (RiftJudge ruling — no discard step) | no end-of-turn discard (was wrongly enforcing 7 through 2.32) | ✅ *(2.33 fix)* |
 | Temporary units | removed at start of your turn | killed in `beginTurn` before scoring | ✅ |
 
 ## 3. Runes & costs
@@ -47,6 +48,7 @@ showdowns → clean per-turn counters → `TURN_ENDED` → advance, `round = ⌊
 | Recycle (the standalone action) | take a channeled rune (even exhausted), send it to the deck bottom, gain 1 Power | `RECYCLE_RUNE` pulls a **new** rune from the deck for 1 generic "Power" for the turn; returns next Awaken | 🟡 mainly used for Deflect surcharges; channeled runes are never sent to the deck (they ramp) |
 | Accelerate / "additional cost to play" | pay the printed `:rb_energy_N::rb_rune_d:` | reminder text parsed; explicit Energy charged, the rune pip floats (Part 2.24) | ✅ |
 | Rune floating (one rune pays toward two things) | supported | **modelled** — a Power pip recycles a rune whose Energy already funded the pool (Part 2.24) | ✅ |
+| Cost modifiers (auras / rules / grants) | cards can raise or lower what you pay | `src/engine/costs.ts` `effectiveCost` — wired for **Applied Researchers** ("[Empowered] your spells cost ⚡1✦1 less, min ⚡1"), **Mystic Vortex** ("[Reaction] cards cost ✦ more during a showdown here"), and **Jayce, Man of Progress** (next gear ignores its Energy cost). Applied at every card-play affordability check + payment | 🟡 partial — abilities not hooked yet, so **Piltovan Forge** / **Risen Altar** (Empower-ability discounts) and **The Academy** / **Marai Spire** (Repeat-cost tweaks) still inert |
 
 ## 4. Movement & showdowns  *(reworked in Part 2.18)*
 
@@ -75,7 +77,9 @@ showdowns → clean per-turn counters → `TURN_ENDED` → advance, `round = ⌊
 |---|---|---|---|
 | Win at | 8 points | `VICTORY_SCORE = 8` | ✅ |
 | Hold | +1 per battlefield you control at start of your turn | `scoreHolds`, once per bf per turn (`scoredThisTurn`) | ✅ |
-| Conquer | +1 when you take a battlefield by combat/open-claim | `scoreConquer`, once per bf per turn, + draw a card if it doesn't win | ✅ |
+| Conquer | +1 when you take a battlefield by combat/open-claim; **no draw** (466.1) | `scoreConquer`, once per bf per turn | ✅ |
+| Conquer draw | only 466.1.b.2 — at 1 short of the Victory Score, a Conquer without a sweep gains no point and draws 1 instead | issued inside `award`, next to the refusal | ✅ |
+| Otterpus | "If a player would score 1 point from conquering or holding during their first or second turn, they draw 1 instead" — symmetric, either side's copy | `award`: `otterpusOut && round <= 2`; `round = floor(turn/2)+1` with `turn` from 0, so rounds 1-2 are each player's first two turns | ✅ |
 | Defender winning a defense | no points | no points (keeps control only) | ✅ |
 | Final (8th) point | only from a **Hold**, a **full sweep** (conquer every battlefield that turn), or a card ability | `award()` refuses a winning point from `kind:'conquer'` unless `controlledCount == battlefields.length`; Holds & abilities allowed | 🟡 "sweep" = *currently control all*, paper = *scored at all this turn* — edge cases differ |
 | Direct-from-card points | some cards score directly | compiler `score point` op → `award(…, 'hold')` path | ✅ |

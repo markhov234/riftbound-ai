@@ -1,9 +1,15 @@
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import clsx from 'clsx'
 import { Card, Domain } from '../types/card'
 import { UnitInPlay } from '../types/game'
 import { mightBonus } from '../engine'
-import GlossaryText from './GlossaryText'
+import { CardRulesText } from './GlossaryText'
+import { useLocale, useT, type StringKey } from '../i18n'
+
+/** Card types and domains are closed sets, so their labels live in the string table. */
+const typeKey = (type: Card['type']): StringKey => `card.type.${type}` as StringKey
+export const domainKey = (d: Domain | 'colorless'): StringKey => `domain.${d}` as StringKey
 
 /** `⚡E ✦P  M⚔ (+N)` — the stat line shared by the detail popup and centre preview.
  *  `⚡` is the Energy cost; each `✦` is a Power pip paid by recycling a rune of
@@ -36,7 +42,7 @@ function StatusRow({ statuses }: { statuses?: string[] }) {
         <span
           key={s}
           className={clsx(
-            'text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 border',
+            'text-micro font-bold uppercase tracking-wide px-1.5 py-0.5 border',
             s === 'Empowered'
               ? 'border-accent text-accent'
               : /^-/.test(s)
@@ -51,21 +57,23 @@ function StatusRow({ statuses }: { statuses?: string[] }) {
   )
 }
 
+/** Kept in step with the `fury`/`calm`/… tokens in tailwind.config.js. */
 export const DOMAIN_HEX: Record<Domain, string> = {
-  fury: '#c0392b',
-  calm: '#16a085',
-  order: '#2980b9',
-  chaos: '#8e44ad',
-  body: '#27ae60',
-  mind: '#f39c12',
-  colorless: '#8a8f98',
+  fury: '#ff5a4d',
+  calm: '#2fd4c4',
+  order: '#5b9dff',
+  chaos: '#b06bff',
+  body: '#3ecf8e',
+  mind: '#ffb800',
+  colorless: '#6B7A8C',
 }
 
 function TextFallback({ card, size }: { card: Card; size: Size }) {
+  const t = useT()
   const small = size === 'sm'
   return (
     <div className="w-full h-full bg-panel2 border border-line flex flex-col p-1 overflow-hidden">
-      <div className="flex justify-between text-[10px] text-txtDim shrink-0 tabular-nums">
+      <div className="flex justify-between text-micro text-txtDim shrink-0 tabular-nums">
         <span>
           ⚡{card.energy}
           {card.power > 0 ? ` ✦${card.power}` : ''}
@@ -76,7 +84,7 @@ function TextFallback({ card, size }: { card: Card; size: Size }) {
       <div
         className={clsx(
           'font-bold text-txt leading-tight uppercase tracking-wide',
-          small ? 'text-[8px] line-clamp-2' : 'text-[10px] line-clamp-2',
+          small ? 'text-micro line-clamp-2' : 'text-micro line-clamp-2',
         )}
       >
         {card.name}
@@ -84,7 +92,7 @@ function TextFallback({ card, size }: { card: Card; size: Size }) {
       {!small && (
         <div className="hud-label mt-0.5">
           {card.supertype ? `${card.supertype} ` : ''}
-          {card.type}
+          {t(typeKey(card.type))}
         </div>
       )}
     </div>
@@ -93,24 +101,26 @@ function TextFallback({ card, size }: { card: Card; size: Size }) {
 
 type Size = 'sm' | 'md'
 
-/** The mockup's mana-square + type-tag overlay drawn over a card tile's image.
+/** Cost + type overlay drawn over a card tile's image.
  *  The square is the Energy cost; a `✦N` tag flags the Power pips (recycle a
- *  rune of that domain to pay each — it floats, so no extra Energy). */
+ *  rune of that domain to pay each — it floats, so no extra Energy), in the
+ *  amber that Power carries everywhere else. */
 function TileBadge({ card }: { card: Card }) {
+  const { locale, t } = useLocale()
+  // No cost chip. The printed card already carries its Energy in the gem at the
+  // top-left and its Power pips beside it, at a size that reads perfectly well
+  // on a tile — re-stating them in an overlay covered that corner of the art
+  // with a number the player could already see. The type tag stays, because the
+  // printed type banner sits mid-card and is genuinely too small to scan there.
   return (
-    <>
-      <span className="absolute top-0 left-0 bg-accent text-black text-[10px] font-bold min-w-4 h-4 px-0.5 flex items-center justify-center leading-none">
-        {card.energy}
-      </span>
-      {card.power > 0 && (
-        <span className="absolute top-4 left-0 bg-black/75 text-accent text-[8px] font-bold px-0.5 leading-none">
-          ✦{card.power}
-        </span>
-      )}
-      <span className="absolute top-0.5 right-0.5 hud-label text-[8px] text-txtDim bg-black/60 px-0.5">
-        {card.type === 'battlefield' ? 'BF' : card.type.slice(0, 5)}
-      </span>
-    </>
+    <span className="absolute top-0.5 right-0.5 hud-label text-micro text-txtDim bg-black/55 px-1 rounded">
+      {/* Korean type names are already short; English ones get clipped to fit. */}
+      {locale === 'en'
+        ? card.type === 'battlefield'
+          ? 'BF'
+          : card.type.slice(0, 5)
+        : t(typeKey(card.type))}
+    </span>
   )
 }
 
@@ -148,6 +158,11 @@ export function CardArt({
           alt={card.name}
           loading="lazy"
           decoding="async"
+          // Images drag natively. On a card tile that hijacks the board's own
+          // drag gesture (dragstart → pointercancel) and the card simply will
+          // not move. Firefox needs the attribute; the CSS counterpart for
+          // Chromium/WebKit lives in index.css.
+          draggable={false}
           onError={() => setErrored(true)}
           className="w-full h-full object-cover"
         />
@@ -156,33 +171,121 @@ export function CardArt({
       )}
       {badge && showImg && <TileBadge card={card} />}
 
-      {hover && preview && (
-        <div
-          className={clsx(
-            'fixed z-[60] top-1/2 -translate-y-1/2 pointer-events-none',
-            side === 'right' ? 'right-4' : 'left-4',
-          )}
-        >
-          <CardDetail card={card} />
-        </div>
-      )}
+      {hover &&
+        preview &&
+        // Rendered into <body>, not here.
+        //
+        // `position: fixed` is only fixed to the viewport while no ancestor has
+        // a transform — one turns the ancestor into the containing block and
+        // traps the element (and its z-index) inside that stacking context. The
+        // hand cards carry an inline transform for the fan, so the preview was
+        // being pinned inside a card tile and the battlefield panel painted
+        // straight over it. A portal steps outside every stacking context.
+        createPortal(
+          <div
+            className={clsx(
+              'fixed z-[60] top-1/2 -translate-y-1/2 pointer-events-none',
+              side === 'right' ? 'right-4' : 'left-4',
+            )}
+          >
+              <CardDetail card={card} />
+          </div>,
+          document.body,
+        )}
     </div>
   )
 }
 
 /** A large, always-visible preview pinned to the centre of the screen. */
+/** One row of a Might sum, already merged across the two combat roles. */
+export interface MightRow {
+  key: string
+  vars?: Record<string, string | number>
+  n: number
+  /** The term applies to both roles, so it needs no tag. */
+  both: boolean
+  role: 'attacker' | 'defender'
+}
+
+export interface MightExplain {
+  rows: MightRow[]
+  attack: number
+  defend: number
+  lethal: number
+  stunned: boolean
+}
+
+/**
+ * The arithmetic behind a unit's Might.
+ *
+ * Every report of "this number is wrong" in testing was really "I cannot see
+ * where this number came from" — printed Might, buffs, Assault, Shield, an
+ * Empowered bonus and a battlefield aura all land in one figure with nothing
+ * to distinguish them. Showing the sum turns a mystery into arithmetic, and
+ * makes a genuinely missing modifier visible at a glance.
+ */
+function MightMath({ might }: { might: MightExplain }) {
+  const t = useT()
+  return (
+    <div className="px-3 py-2 border-t border-line text-tiny">
+      <div className="hud-label text-txtFaint mb-1">{t('might.title')}</div>
+      {might.rows.map((r, i) => (
+        <div key={i} className="flex items-baseline gap-2 leading-tight">
+          <span
+            className={clsx(
+              'w-7 text-right tnum shrink-0',
+              r.n < 0 ? 'text-danger' : i === 0 ? 'text-txt' : 'text-accent',
+            )}
+          >
+            {i === 0 ? r.n : `${r.n > 0 ? '+' : ''}${r.n}`}
+          </span>
+          <span className="text-txtDim truncate">
+            {t(r.key as 'might.printed', r.vars)}
+            {!r.both && (
+              <span className="text-txtFaint">
+                {' · '}
+                {t(r.role === 'attacker' ? 'might.whenAttacking' : 'might.whenDefending')}
+              </span>
+            )}
+          </span>
+        </div>
+      ))}
+      <div className="mt-1.5 pt-1.5 border-t border-line/60 flex items-center gap-3 tnum">
+        <span className="text-accent font-bold">{might.attack}⚔</span>
+        <span className="text-hextech font-bold">{might.defend}⛨</span>
+        <span className="text-txtDim">{t('might.toKill', { n: might.lethal })}</span>
+      </div>
+      {might.stunned && (
+        <div className="mt-1 text-micro text-danger leading-snug">{t('might.stunnedNote')}</div>
+      )}
+    </div>
+  )
+}
+
 export function CenterPreview({
   card,
   unit,
   statuses,
+  might,
+  side = 'right',
 }: {
   card: Card | null
   unit?: UnitInPlay
   statuses?: string[]
+  might?: MightExplain | null
+  /** Which edge to dock to. The caller flips this away from the pointer so the
+   *  preview never sits on top of what you are about to click — the gear box
+   *  lives under the right-hand dock, which made gear untargetable in practice. */
+  side?: 'left' | 'right'
 }) {
   if (!card) return null
   return (
-    <div className="fixed right-2 top-64 z-20 w-[var(--side-w,16rem)] pointer-events-none">
+    <div
+      className={clsx(
+        'fixed top-64 z-20 w-[var(--side-w,16rem)] pointer-events-none transition-[left,right] duration-150',
+        side === 'right' ? 'right-2' : 'left-2',
+      )}
+    >
       <div className="w-full overflow-hidden border border-line bg-panel shadow-xl">
         {card.imageUrl ? (
           <img src={card.imageUrl} alt={card.name} className="w-full block" />
@@ -192,12 +295,11 @@ export function CenterPreview({
           </div>
         )}
         <div className="px-3 py-1.5 border-t border-line flex items-center justify-between">
-          <span className="text-[11px] font-bold text-txt uppercase tracking-wide truncate">
-            {card.name}
-          </span>
+          <span className="display-face text-sm text-txt truncate">{card.name}</span>
           <StatLine card={card} unit={unit} />
         </div>
         <StatusRow statuses={statuses} />
+        {might && <MightMath might={might} />}
       </div>
     </div>
   )
@@ -212,6 +314,7 @@ export function CardDetail({
   unit?: UnitInPlay
   statuses?: string[]
 }) {
+  const t = useT()
   const bf = card.type === 'battlefield'
   return (
     <div className="w-[440px] max-w-[90vw] bg-panel border border-line p-3 flex gap-3">
@@ -223,11 +326,11 @@ export function CardDetail({
         )}
       </div>
       <div className="min-w-0 text-txt">
-        <div className="font-bold leading-tight uppercase tracking-wide text-sm">{card.name}</div>
+        <div className="display-face leading-tight text-base text-txt">{card.name}</div>
         <div className="hud-label mt-0.5">
           {card.supertype ? `${card.supertype} ` : ''}
-          {card.type}
-          {card.domains.length > 0 && ` · ${card.domains.join('/')}`}
+          {t(typeKey(card.type))}
+          {card.domains.length > 0 && ` · ${card.domains.map((d) => t(domainKey(d))).join('/')}`}
         </div>
         <div className="mt-1">
           <StatLine card={card} unit={unit} />
@@ -239,11 +342,11 @@ export function CardDetail({
         )}
         {card.text && (
           <p className="text-xs text-txt mt-2 whitespace-pre-wrap leading-snug">
-            <GlossaryText text={card.text} />
+            <CardRulesText showOriginal text={card.text} />
           </p>
         )}
         {card.flavour && (
-          <p className="text-[11px] text-txtFaint italic mt-2 leading-snug">{card.flavour}</p>
+          <p className="text-tiny text-txtFaint italic mt-2 leading-snug">{card.flavour}</p>
         )}
       </div>
     </div>
@@ -265,6 +368,7 @@ export function PinnedCard({
   statuses?: string[]
   onClose: () => void
 }) {
+  const t = useT()
   return (
     <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[65] pointer-events-auto">
       <div className="relative">
@@ -272,12 +376,12 @@ export function PinnedCard({
           onClick={onClose}
           className="absolute -top-2 -right-2 z-10 w-6 h-6 bg-panel2 border border-line
                      text-txt text-xs hover:border-accent hover:text-accent"
-          title="Close (Esc)"
+          title={t('common.close')}
         >
           ✕
         </button>
         <CardDetail card={card} unit={unit} statuses={statuses} />
-        <div className="mt-1 text-center hud-label">hover a keyword for its rule · Esc to close</div>
+        <div className="mt-1 text-center hud-label">{t('card.pinnedHint')}</div>
       </div>
     </div>
   )

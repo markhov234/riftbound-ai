@@ -2,13 +2,15 @@ import { Card } from '../../types/card'
 import { GameState } from '../../types/game'
 import {
   bankEnergy,
+  banishPermanent,
   bounceUnit,
   buff,
   burn,
+  confirmChoice,
   counterStackItem,
   createToken,
   dealDamage,
-  digTopN,
+  digChoice,
   discardCards,
   draw,
   EffectCtx,
@@ -17,6 +19,9 @@ import {
   giveMightPermanent,
   grantKeywordThisTurn,
   killGear,
+  killGearChoice,
+  readyPermanentsChoice,
+  recall,
   moveUnitEffect,
   predictChoice,
   readyUnit,
@@ -27,12 +32,14 @@ import {
   setEmpowered,
   soleControllerAt,
   stun,
+  swapLocations,
+  swapMight,
   targetUnit,
 } from './effects'
 import { autoAbilities, compileScript } from './compile'
 import { isEmpowered, legionActive, levelActive } from './statuses'
 import { ActivatedAbility, CardScript } from './types'
-import { appendLog } from '../state'
+import { appendLog, findGear, findUnit, getPlayer, updatePlayer } from '../state'
 
 // Registry keyed by a normalized card name. `scriptFor` normalizes the card's
 // name / cleanName the same way and looks both up.
@@ -60,7 +67,7 @@ export const CARD_SCRIPTS: Record<string, CardScript> = Object.fromEntries([
         // would re-fire against the just-exhausted legend at resolution.
         label: 'Exhaust + 1 rune: ready a friendly unit',
         cost: { exhaustSelf: true, runes: ['colorless'] },
-        targets: [{ kind: 'friendlyUnit', filter: (u) => u.exhausted }],
+        targets: [{ kind: 'friendlyUnit', label: 'to ready it', intent: 'buff', filter: (u) => u.exhausted }],
         effect: (ctx) => {
           const u = targetUnit(ctx)
           if (!u) return ctx.state
@@ -97,6 +104,8 @@ export const CARD_SCRIPTS: Record<string, CardScript> = Object.fromEntries([
       targets: [
         {
           kind: 'stackSpell',
+          label: 'to counter it',
+          intent: 'harm',
           spellFilter: (c) => c.energy <= 4,
         },
       ],
@@ -109,7 +118,7 @@ export const CARD_SCRIPTS: Record<string, CardScript> = Object.fromEntries([
   R('Discipline', {
     play: {
       timing: 'reaction',
-      targets: [{ kind: 'unit' }],
+      targets: [{ kind: 'unit', label: 'to give +2 Might this turn', intent: 'buff' }],
       effect: (ctx) => {
         const u = targetUnit(ctx)
         let s = ctx.state
@@ -121,7 +130,7 @@ export const CARD_SCRIPTS: Record<string, CardScript> = Object.fromEntries([
   R('En Garde', {
     play: {
       timing: 'reaction',
-      targets: [{ kind: 'friendlyUnit' }],
+      targets: [{ kind: 'friendlyUnit', label: 'to give +1 Might this turn (+2 if it stands alone)', intent: 'buff' }],
       effect: (ctx) => {
         const u = targetUnit(ctx)
         if (!u) return ctx.state
@@ -134,10 +143,14 @@ export const CARD_SCRIPTS: Record<string, CardScript> = Object.fromEntries([
   R('Fight or Flight', {
     play: {
       timing: 'action',
-      targets: [{ kind: 'unit', filter: (u) => u.location.kind === 'battlefield' }],
+      targets: [
+        { kind: 'unit', label: 'to send it back to base', intent: 'harm', filter: (u) => u.location.kind === 'battlefield' },
+      ],
       effect: (ctx) => {
         const u = targetUnit(ctx)
-        return u ? moveUnitEffect(ctx.state, u.instanceId, { kind: 'base' }, {}, ctx.emit) : ctx.state
+        return u
+          ? moveUnitEffect(ctx.state, u.instanceId, { kind: 'base' }, { by: ctx.controller }, ctx.emit)
+          : ctx.state
       },
     },
   }),
@@ -147,6 +160,8 @@ export const CARD_SCRIPTS: Record<string, CardScript> = Object.fromEntries([
       targets: [
         {
           kind: 'unitAtBattlefield',
+          label: 'to bounce it to its owner’s hand',
+          intent: 'harm',
           filter: (u) => u.card.might + (u.counters.mightTurn ?? 0) <= 3,
         },
       ],
@@ -159,7 +174,7 @@ export const CARD_SCRIPTS: Record<string, CardScript> = Object.fromEntries([
   R('Ride the Wind', {
     play: {
       timing: 'action',
-      targets: [{ kind: 'friendlyUnit' }],
+      targets: [{ kind: 'friendlyUnit', label: 'to move it to the other battlefield and ready it', intent: 'buff' }],
       effect: (ctx) => {
         const u = targetUnit(ctx)
         if (!u || u.location.kind !== 'battlefield') {
@@ -169,17 +184,20 @@ export const CARD_SCRIPTS: Record<string, CardScript> = Object.fromEntries([
         // battlefields in a 1v1 this is "move to the other one".
         const count = ctx.state.battlefields.length
         const to = { kind: 'battlefield' as const, index: (u.location.index + 1) % count }
-        return moveUnitEffect(ctx.state, u.instanceId, to, { ready: true }, ctx.emit)
+        return moveUnitEffect(ctx.state, u.instanceId, to, { ready: true, by: ctx.controller }, ctx.emit)
       },
     },
   }),
   R('Stacked Deck', {
-    play: { timing: 'action', effect: (ctx) => digTopN(ctx.state, ctx.controller, 3, 1) },
+    play: { timing: 'action', effect: (ctx) => digChoice(ctx.state, ctx.controller, 3, 1) },
   }),
   R('Defiant Dance', {
     play: {
       timing: 'reaction',
-      targets: [{ kind: 'unit' }, { kind: 'unit' }],
+      targets: [
+        { kind: 'unit', label: 'to give +2 Might this turn', intent: 'buff' },
+        { kind: 'unit', label: 'to give −2 Might this turn', intent: 'harm' },
+      ],
       effect: (ctx) => {
         const a = targetUnit(ctx, 0)
         const b = targetUnit(ctx, 1)
@@ -190,34 +208,57 @@ export const CARD_SCRIPTS: Record<string, CardScript> = Object.fromEntries([
       },
     },
   }),
+  // riftcodex's `text` for this card is **incomplete** — it carries only the
+  // "[Equip] :rb_rune_calm:" line and omits the ability printed on the art:
+  // "If I would die, kill Guardian Angel instead. Heal me, exhaust me, and
+  // recall me." So the replacement is written out here rather than compiled.
   R('Guardian Angel', {
-    play: {
-      timing: 'action',
-      targets: [{ kind: 'friendlyUnit' }],
-      effect: (ctx) => {
-        const u = targetUnit(ctx)
-        return u ? grantShield(ctx.state, u.instanceId) : ctx.state
-      },
+    // Equipment: playing it just puts it into play — the Shield and the death
+    // replacement belong to whatever it is *equipped to*. (It previously had an
+    // invented on-play "choose a unit to Shield", which is not on the card and
+    // made simply playing the gear require a unit on the board.)
+    gearGrant: { keywords: [{ name: 'Shield', x: 1 }] },
+    replaceDeath: (state, unit, gear) => {
+      // Equipment: it only protects the unit it is attached to.
+      if (gear.attachedTo !== unit.instanceId) return null
+      // "Kill Guardian Angel instead. Heal me, exhaust me, and recall me."
+      const next = recall(killGear(state, gear.instanceId), unit.instanceId, {
+        heal: true,
+        exhaust: true,
+      })
+      return appendLog(
+        next,
+        `${gear.card.name} is destroyed instead — ${unit.card.name} is recalled exhausted.`,
+      )
     },
   }),
   R('Heart of Dark Ice', {
     play: {
       timing: 'action',
-      targets: [{ kind: 'unit' }],
+      targets: [{ kind: 'unit', label: 'to give +3 Might this turn', intent: 'buff' }],
       effect: (ctx) => {
         const u = targetUnit(ctx)
         return u ? giveMight(ctx.state, u.instanceId, 3) : ctx.state
       },
     },
   }),
+  // Errata'd (Origins card errata): "If a friendly unit would die, kill this
+  // instead. Heal that unit, exhaust it, and recall it." It is a *standalone*
+  // gear, not Equipment — it saves any friendly unit, wherever that unit is,
+  // which is why `deathReplacement` can't be limited to attached gear.
+  // It previously carried an invented on-play "give a unit Shield", which is
+  // nowhere on the card, so the real effect never ran at all.
   R("Zhonya's Hourglass", {
-    play: {
-      timing: 'action',
-      targets: [{ kind: 'friendlyUnit' }],
-      effect: (ctx) => {
-        const u = targetUnit(ctx)
-        return u ? grantShield(ctx.state, u.instanceId) : ctx.state
-      },
+    replaceDeath: (state, unit, gear) => {
+      if (gear.attachedTo) return null // never attached; don't fire as Equipment
+      const next = recall(killGear(state, gear.instanceId), unit.instanceId, {
+        heal: true,
+        exhaust: true,
+      })
+      return appendLog(
+        next,
+        `${gear.card.name} is destroyed instead — ${unit.card.name} is healed and recalled exhausted.`,
+      )
     },
   }),
 
@@ -343,7 +384,8 @@ export const CARD_SCRIPTS: Record<string, CardScript> = Object.fromEntries([
       effect: (ctx) => {
         let s = ctx.state
         for (const t of ctx.targets) {
-          if (t.instanceId) s = moveUnitEffect(s, t.instanceId, { kind: 'base' }, {}, ctx.emit)
+          if (t.instanceId)
+            s = moveUnitEffect(s, t.instanceId, { kind: 'base' }, { by: ctx.controller }, ctx.emit)
         }
         return s
       },
@@ -497,6 +539,15 @@ export const CARD_SCRIPTS: Record<string, CardScript> = Object.fromEntries([
     ],
   }),
 
+  // "Ready up to 4 units, gear, and/or runes."
+  // The compiler's "ready a unit" op only ever produced a single friendlyUnit
+  // target, so this readied exactly one unit and never touched gear or runes.
+  // Three different kinds can't be one `TargetSpec`, so it's a mixed picker.
+  R('Acceleration Gate', {
+    play: { effect: (ctx) => readyPermanentsChoice(ctx.state, ctx.controller, 4) },
+  }),
+
+
   // ── Jayce (gear payoffs) ───────────────────────────────────────────────
   // "When you play me … you may ready something besides me that's exhausted."
   R('Jayce, Brilliant Inventor', {
@@ -534,15 +585,23 @@ export const CARD_SCRIPTS: Record<string, CardScript> = Object.fromEntries([
       },
     ],
   }),
-  // "When you play me, you may kill a friendly gear. …" (partial: the kill only)
+  // "When you play me, you may kill a friendly gear. If you do, you may play a
+  //  gear from hand this turn ignoring its Energy cost."
+  //  Simplification: not optional — fires only when the trade is worthwhile
+  //  (you have a gear in play AND a gear in hand to replay for free).
   R('Jayce, Man of Progress', {
     triggers: [
       {
         on: 'UNIT_ENTERED',
         self: true,
         effect: (ctx) => {
-          const g = (ctx.controller === 'player' ? ctx.state.player : ctx.state.ai).gear[0]
-          return g ? killGear(ctx.state, g.instanceId) : ctx.state
+          const ps = ctx.controller === 'player' ? ctx.state.player : ctx.state.ai
+          const g = ps.gear[0]
+          const hasGearInHand = ps.hand.some((c) => c.type === 'gear')
+          if (!g || !hasGearInHand) return ctx.state
+          let s = killGear(ctx.state, g.instanceId)
+          s = { ...s, [ctx.controller]: { ...(ctx.controller === 'player' ? s.player : s.ai), freeGearThisTurn: true } } as typeof s
+          return appendLog(s, `${ctx.controller}'s next gear this turn ignores its Energy cost.`)
         },
       },
     ],
@@ -612,6 +671,313 @@ export const CARD_SCRIPTS: Record<string, CardScript> = Object.fromEntries([
       },
     },
   }),
+
+  // ── Cards that watch for *any* card played from face down (811) ────────
+  // "When you play a card from face down, deal 2 to an enemy unit."
+  R('Katarina - Reckless', {
+    triggers: [
+      {
+        on: 'CARD_PLAYED',
+        byController: true,
+        condition: (e) => e.type === 'CARD_PLAYED' && !!e.fromFacedown,
+        targets: [{ kind: 'enemyUnit', label: 'to deal 2', intent: 'harm' }],
+        effect: (ctx) => {
+          const u = targetUnit(ctx)
+          return u ? dealDamage(ctx.state, u.instanceId, 2, ctx.emit) : ctx.state
+        },
+      },
+    ],
+  }),
+  // "When you play a card from face down, play a Gold gear token exhausted."
+  R('Black Market Broker', {
+    triggers: [
+      {
+        on: 'CARD_PLAYED',
+        byController: true,
+        condition: (e) => e.type === 'CARD_PLAYED' && !!e.fromFacedown,
+        effect: (ctx) =>
+          createToken(ctx.state, ctx.controller, 'Gold', { kind: 'base' }, {
+            gear: true,
+            emit: ctx.emit,
+          }),
+      },
+    ],
+  }),
+
+  // Two more cards whose API text carries only the [Equip] line and omits the
+  // printed "Attached:" box (same gap as Guardian Angel). Verified on the
+  // League of Legends wiki card pages.
+  // Boots of Swiftness — Attached: "+2 might. Ganking."
+  R('Boots of Swiftness', {
+    gearGrant: { might: 2, keywords: [{ name: 'Ganking', x: 1 }] },
+  }),
+  // Edge of Night — Attached: "+2 might". Its [Hidden] clause ("when you play
+  // this from face down, attach it to a unit you control here") is handled at
+  // gear resolution in stack.ts.
+  R('Edge of Night', {
+    play: { targets: [{ kind: 'friendlyUnit', optional: true, label: 'to attach to', intent: 'buff' }], effect: (ctx) => ctx.state },
+    gearGrant: { might: 2 },
+  }),
+  // Jagged Cutlass (VEN 073) — the API ships only the [Equip] line again. Read
+  // off the printed card face, the Attached box is:
+  //   "I can't be moved by enemy spells and abilities."   ⚔ +2
+  // The Might is granted here; the move protection is `noEnemyMove` below.
+  R('Jagged Cutlass', {
+    gearGrant: { might: 2, noEnemyMove: true },
+  }),
+
+  // ── Vex, Gloomist (Fuzhou 4th) ─────────────────────────────────────────
+  // "When you or an ally hold, you may exhaust me to draw 1."
+  R('Vex - Gloomist', {
+    triggers: [
+      {
+        on: 'HELD',
+        byController: true,
+        effect: (ctx) => {
+          const ps = getPlayer(ctx.state, ctx.controller)
+          if (ps.legendExhausted) return ctx.state
+          return confirmChoice(ctx.state, ctx.controller, 'Exhaust Vex to draw 1?', (s) =>
+            draw(
+              updatePlayer(s, ctx.controller, (p2) => ({ ...p2, legendExhausted: true })),
+              ctx.controller,
+              1,
+            ),
+          )
+        },
+      },
+    ],
+  }),
+  // "[Deflect] When an opponent plays a unit while I'm at a battlefield,
+  //  [Stun] it." Deflect itself comes free from `card.keywords`.
+  R('Vex - Apathetic', {
+    triggers: [
+      {
+        on: 'UNIT_ENTERED',
+        // Not `byController` — this fires on the *opponent's* unit.
+        condition: (e, _s, src) =>
+          e.type === 'UNIT_ENTERED' &&
+          !!src &&
+          src.location.kind === 'battlefield' &&
+          e.controller !== src.owner,
+        effect: (ctx) => {
+          const e = ctx.event
+          return e && e.type === 'UNIT_ENTERED' ? stun(ctx.state, e.instanceId) : ctx.state
+        },
+      },
+    ],
+  }),
+  // "When you play your first card each turn, if I'm at a battlefield, your
+  //  next card costs :rb_energy_2::rb_rune_rainbow::rb_rune_rainbow: less."
+  R('Astral Heron', {
+    triggers: [
+      {
+        on: 'CARD_PLAYED',
+        byController: true,
+        condition: (e, _s, src) =>
+          e.type === 'CARD_PLAYED' && e.nth === 1 && !!src && src.location.kind === 'battlefield',
+        effect: (ctx) =>
+          appendLog(
+            updatePlayer(ctx.state, ctx.controller, (ps) => ({
+              ...ps,
+              nextCardDiscount: { energy: 2, runes: 2 },
+            })),
+            'Astral Heron: your next card costs 2 energy and 2 runes less.',
+          ),
+      },
+    ],
+  }),
+  // "When you play me, you may kill a gear."
+  R('Disarming Rake', {
+    triggers: [
+      {
+        on: 'UNIT_ENTERED',
+        self: true,
+        effect: (ctx) => killGearChoice(ctx.state, ctx.controller, 'Disarming Rake — kill a gear?'),
+      },
+    ],
+  }),
+  // "[Hidden][Backline] When you play me from face down on your turn, you may
+  //  move an enemy unit at a different location to my battlefield."
+  R('Evelynn - Entrancing', {
+    triggers: [
+      {
+        on: 'UNIT_ENTERED',
+        self: true,
+        // "…from face down" — `playedFaceDown` is stamped on the unit by
+        // `playUnit`, because the event system gives a trigger no way to know
+        // which zone its source was played from.
+        condition: (_e, _s, src) => (src?.counters.playedFaceDown ?? 0) > 0,
+        targets: [{ kind: 'enemyUnit', optional: true, label: 'to pull here', intent: 'harm' }],
+        effect: (ctx) => {
+          const me = ctx.source
+          const target = targetUnit(ctx)
+          if (!me || !target || !('location' in me) || me.location.kind !== 'battlefield') {
+            return ctx.state
+          }
+          // "at a different location" — pulling one already here does nothing.
+          if (target.location.kind === 'battlefield' && target.location.index === me.location.index) {
+            return ctx.state
+          }
+          return moveUnitEffect(ctx.state, target.instanceId, me.location, { by: ctx.controller }, ctx.emit)
+        },
+      },
+    ],
+  }),
+  // "[Reaction] Counter an enemy spell or ability that chooses a friendly unit
+  //  or gear."
+  R('Not So Fast', {
+    play: {
+      timing: 'reaction',
+      targets: [
+        {
+          kind: 'stackSpell',
+          label: 'to counter it',
+          intent: 'harm',
+          // The "chooses a friendly permanent" restriction is checked in the
+          // effect, where the stack item's resolved targets are visible.
+        },
+      ],
+      effect: (ctx) => {
+        const t = ctx.targets.find((x) => x.kind === 'stackItem')
+        if (!t?.stackItemId) return ctx.state
+        const item = ctx.state.stack.find((x) => x.id === t.stackItemId)
+        if (!item || item.controller === ctx.controller) {
+          return appendLog(ctx.state, 'Not So Fast: that is not an enemy spell or ability.')
+        }
+        const choosesMine = item.targets.some((tg) => {
+          if (!tg.instanceId) return false
+          const u = findUnit(ctx.state, tg.instanceId)
+          if (u) return u.owner === ctx.controller
+          const g = findGear(ctx.state, tg.instanceId)
+          return !!g && g.owner === ctx.controller
+        })
+        if (!choosesMine) {
+          return appendLog(ctx.state, 'Not So Fast: it does not choose a friendly unit or gear.')
+        }
+        return counterStackItem(ctx.state, t.stackItemId)
+      },
+    },
+  }),
+  // "When an opponent plays a gear, you may banish me to banish it."
+  R('Ravenbloom Prefect', {
+    triggers: [
+      {
+        on: 'CARD_PLAYED',
+        condition: (e, _s, src) =>
+          e.type === 'CARD_PLAYED' && e.card.type === 'gear' && !!src && e.controller !== src.owner,
+        effect: (ctx) => {
+          const me = ctx.source
+          const e = ctx.event
+          if (!me || !e || e.type !== 'CARD_PLAYED') return ctx.state
+          // The gear is still on the chain when this triggers, so banish the
+          // most recent one its controller actually has in play.
+          const theirs = getPlayer(ctx.state, e.controller).gear
+          const gear = [...theirs].reverse().find((g) => g.card.id === e.card.id)
+          if (!gear) return ctx.state
+          return confirmChoice(
+            ctx.state,
+            ctx.controller,
+            `Banish Ravenbloom Prefect to banish ${e.card.name}?`,
+            (s) => banishPermanent(banishPermanent(s, me.instanceId, ctx.emit), gear.instanceId, ctx.emit),
+          )
+        },
+      },
+    ],
+  }),
+  // "[Reaction] Choose one — Empower a unit. Disempower it at end of turn. /
+  //  Disempower a unit that's [Empowered]. Empower it at end of turn."
+  // The "swap back at end of turn" half needs a delayed trigger the engine has
+  // no home for yet, so only the immediate half runs; see docs.
+  R('Sanction', {
+    play: {
+      timing: 'reaction',
+      targets: [{ kind: 'unit', label: 'to Empower or Disempower', intent: 'buff' }],
+      effect: (ctx) => {
+        const u = targetUnit(ctx)
+        if (!u) return ctx.state
+        // "Choose one" collapses to the only legal half: an Empowered unit gets
+        // Disempowered, anything else gets Empowered.
+        return setEmpowered(ctx.state, u.instanceId, !u.empowered)
+      },
+    },
+  }),
+  // "[Hidden][Action] Swap the Might of two units at the same battlefield this turn."
+  R('Switcheroo', {
+    play: {
+      timing: 'action',
+      targets: [
+        { kind: 'unitAtBattlefield', label: 'to swap Might' },
+        { kind: 'unitAtBattlefield', label: 'with this one' },
+      ],
+      effect: (ctx) => {
+        const a = targetUnit(ctx, 0)
+        const b = targetUnit(ctx, 1)
+        if (!a || !b) return ctx.state
+        if (
+          a.location.kind !== 'battlefield' ||
+          b.location.kind !== 'battlefield' ||
+          a.location.index !== b.location.index
+        ) {
+          return appendLog(ctx.state, 'Switcheroo: both units must be at the same battlefield.')
+        }
+        return swapMight(ctx.state, a.instanceId, b.instanceId)
+      },
+    },
+  }),
+  // "[Hidden] When you play me, you may choose a friendly unit. Move me to its
+  //  location and it to my original location."
+  R('Tideturner', {
+    triggers: [
+      {
+        on: 'UNIT_ENTERED',
+        self: true,
+        targets: [
+          {
+            kind: 'friendlyUnit',
+            optional: true,
+            label: 'to swap places with',
+            intent: 'buff',
+          },
+        ],
+        effect: (ctx) => {
+          const me = ctx.source
+          const other = targetUnit(ctx)
+          if (!me || !other || me.instanceId === other.instanceId) return ctx.state
+          return swapLocations(ctx.state, me.instanceId, other.instanceId)
+        },
+      },
+    ],
+  }),
+  // "[Hidden] When you play me from face down, you may empower something here.
+  //  Disempower it at end of turn."
+  R('Tornado Warrior', {
+    triggers: [
+      {
+        on: 'UNIT_ENTERED',
+        self: true,
+        condition: (_e, _s, src) => (src?.counters.playedFaceDown ?? 0) > 0,
+        // "empower something *here*" — restricted to its own battlefield.
+        targets: [
+          {
+            kind: 'friendlyUnit',
+            optional: true,
+            label: 'to Empower',
+            intent: 'buff',
+            filter: (u, _s) => u.location.kind === 'battlefield',
+          },
+        ],
+        effect: (ctx) => {
+          const me = ctx.source
+          const u = targetUnit(ctx)
+          if (!me || !u || !('location' in me) || me.location.kind !== 'battlefield') return ctx.state
+          if (u.location.kind !== 'battlefield' || u.location.index !== me.location.index) {
+            return ctx.state
+          }
+          return setEmpowered(ctx.state, u.instanceId, true)
+        },
+      },
+    ],
+  }),
 ])
 
 /** Zed, Without a Sound — swap Zed and a friendly Shadow Clone's locations. */
@@ -680,27 +1046,6 @@ const readyIf =
   <T extends { instanceId: string; exhausted: boolean }>(x: T): T =>
     x.instanceId === id ? { ...x, exhausted: false } : x
 
-function grantShield(state: GameState, instanceId: string): GameState {
-  return {
-    ...state,
-    player: {
-      ...state.player,
-      base: state.player.base.map(bump(instanceId)),
-    },
-    ai: { ...state.ai, base: state.ai.base.map(bump(instanceId)) },
-    battlefields: state.battlefields.map((bf) => ({
-      ...bf,
-      units: bf.units.map(bump(instanceId)),
-    })),
-  }
-}
-const bump =
-  (instanceId: string) =>
-  <T extends { instanceId: string; counters: Record<string, number> }>(u: T): T =>
-    u.instanceId === instanceId
-      ? { ...u, counters: { ...u.counters, shield: (u.counters.shield ?? 0) + 1 } }
-      : u
-
 // ── Lookup ───────────────────────────────────────────────────────────────
 
 function explicitScript(card: Card): CardScript | undefined {
@@ -731,12 +1076,9 @@ export function scriptFor(card: Card): CardScript | undefined {
   // A hand-written script is the source of truth for the sections it defines —
   // only borrow a whole section it leaves out (so bespoke cards still get auto
   // Empower / Empowered-Might without double-firing their own triggers).
-  return {
-    keywords: explicit.keywords ?? compiled.keywords,
-    play: explicit.play ?? compiled.play,
-    triggers: explicit.triggers ?? compiled.triggers,
-    activated: explicit.activated ?? compiled.activated,
-    empoweredMight: explicit.empoweredMight ?? compiled.empoweredMight,
-    empoweredAssault: explicit.empoweredAssault ?? compiled.empoweredAssault,
-  }
+  //
+  // Spread rather than listing fields: the old hand-written merge silently
+  // dropped any `CardScript` key it didn't know about, which is how
+  // `replaceDeath` went missing the first time it was added.
+  return { ...(compiled ?? {}), ...explicit }
 }

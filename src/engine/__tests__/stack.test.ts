@@ -70,6 +70,35 @@ describe('the stack', () => {
     expect(s.player.hand.length).toBe(handAfterCast + 1) // then drew
   })
 
+  it('Stacked-Deck-style "look at top 3, put 1 in hand" prompts the player to pick', () => {
+    const stackedDeck = makeCard({
+      name: 'Test Stacked Deck',
+      type: 'spell',
+      domains: ['fury'],
+      energy: 1,
+      text: 'Look at the top 3 cards of your Main Deck. Put 1 into your hand and recycle the rest.',
+    })
+    let s = startedGame({ firstPlayer: 'player' })
+    s = withHand(s, 'player', [stackedDeck])
+    const hand0 = 0 // stackedDeck is the only card, spent on cast
+    const deck0 = s.player.mainDeck.length
+    s = dispatch(s, { type: 'PLAY_SPELL', card: stackedDeck }, 'player')
+    s = resolveTop(s)
+
+    // A pick is queued — nothing added to hand yet.
+    expect(s.pendingChoices).toHaveLength(1)
+    expect(s.pendingChoices[0].kind).toBe('deckTop')
+    expect(s.pendingChoices[0].legalIds).toHaveLength(3)
+    expect(s.player.hand.length).toBe(hand0)
+
+    const keep = s.pendingChoices[0].legalIds[1]
+    s = dispatch(s, { type: 'RESOLVE_CHOICE', pickedIds: [keep] }, 'player')
+    expect(s.player.hand.map((c) => c.id)).toContain(keep)
+    expect(s.player.hand.length).toBe(hand0 + 1)
+    // Net deck change: -3 looked at, +2 recycled to bottom = -1.
+    expect(s.player.mainDeck.length).toBe(deck0 - 1)
+  })
+
   it('an unscripted "discard a card, then draw" spell prompts for the discard', () => {
     const rummage = makeCard({
       name: 'Rummage',
@@ -88,6 +117,43 @@ describe('the stack', () => {
     s = dispatch(s, { type: 'RESOLVE_CHOICE', pickedIds: [filler.id] }, 'player')
     expect(s.player.trash.some((c) => c.id === filler.id)).toBe(true)
     expect(s.player.hand.length).toBe(1) // discarded filler, drew 1
+  })
+
+  it('[Repeat] — paying it resolves the spell effect one extra time', () => {
+    const echoBolt = makeCard({
+      name: 'Echo Bolt',
+      type: 'spell',
+      domains: ['fury'],
+      energy: 2,
+      text:
+        'Deal 2 damage to a unit. [Repeat] :rb_energy_1: (You may pay :rb_energy_1: as an additional cost to Repeat this spell.)',
+    })
+    const bruiser = makeCard({ name: 'Bruiser', type: 'unit', domains: ['fury'], energy: 5, might: 6 })
+
+    // Without paying [Repeat]: 2 damage.
+    let s = startedGame({ firstPlayer: 'player' })
+    s = withHand(s, 'player', [echoBolt])
+    s = bumpEnergy(s, 'player', 9)
+    s = placeUnitAt(s, 'ai', bruiser, 0)
+    s = dispatch(s, { type: 'PLAY_SPELL', card: echoBolt, targetInstanceIds: [aiUnitId(s)] }, 'player')
+    s = resolveTop(s)
+    expect(aiUnits(s)[0].damage).toBe(2)
+
+    // Paying [Repeat]: the effect runs twice → 4 damage (and 1 extra energy spent).
+    let s2 = startedGame({ firstPlayer: 'player' })
+    s2 = withHand(s2, 'player', [echoBolt])
+    s2 = bumpEnergy(s2, 'player', 9)
+    s2 = placeUnitAt(s2, 'ai', bruiser, 0)
+    const e0 = s2.player.runes.energy
+    s2 = dispatch(
+      s2,
+      { type: 'PLAY_SPELL', card: echoBolt, targetInstanceIds: [aiUnitId(s2)], paidRepeat: true },
+      'player',
+    )
+    expect(s2.stack[0].repeat).toBe(1)
+    expect(s2.player.runes.energy).toBe(e0 - echoBolt.energy - 1)
+    s2 = resolveTop(s2)
+    expect(aiUnits(s2)[0].damage).toBe(4)
   })
 
   it('Defy counters a spell on the stack so its effect never runs', () => {

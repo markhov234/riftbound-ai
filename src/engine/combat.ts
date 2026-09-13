@@ -1,7 +1,8 @@
 import { DamageAssignment, GameState, PlayerSide, UnitInPlay } from '../types/game'
 import { killUnit } from './abilities/effects'
 import { emit } from './events'
-import { damageOrderRank, keywordValue, lethalMight, showdownMight } from './keywords'
+import { clearOrphanedFacedown } from './hidden'
+import { CombatRole, damageOrderRank, lethalMight, showdownMight } from './keywords'
 import { scoreConquer } from './scoring'
 import { appendLog, controllerOf, mapAllUnits, otherSide, unitsAt } from './state'
 
@@ -11,42 +12,59 @@ interface SideOutcome {
 }
 
 /**
- * Auto-assign `pool` damage across `targets`. Tank units must take lethal damage
- * first, Backline last; within each band, cheapest-to-kill first so the most
- * units die.
+ * Auto-assign `pool` damage across `targets`, per rule 460.2.c:
+ *  - c.3 a unit must be assigned *lethal* damage in full before any damage goes
+ *    to a different unit;
+ *  - c.4 no unit may be assigned more than the minimum lethal amount while any
+ *    other unit is still unassigned — so leftovers become excess only once
+ *    everything is dead;
+ *  - c.5 Tank must be lethal first and Backline last (`damageOrderRank`).
+ * Within a band we kill the cheapest first, so the pool destroys the most units.
+ * The whole pool is always assigned: what can't kill anything is dumped on the
+ * first legal survivor rather than silently vanishing.
  */
-export function autoAssign(pool: number, targets: UnitInPlay[], state: GameState): SideOutcome {
-  const order = [...targets].sort(
-    (a, b) =>
-      damageOrderRank(a) - damageOrderRank(b) ||
-      effHp(a, state) - effHp(b, state) ||
-      b.card.might - a.card.might,
+export function autoAssign(
+  pool: number,
+  targets: UnitInPlay[],
+  state: GameState,
+  role: CombatRole,
+): SideOutcome {
+  const list = autoAssignmentList(pool, targets, state, role)
+  const byId = new Map(list.map((a) => [a.targetInstanceId, a.amount]))
+  const destroyed = targets
+    .filter((t) => (byId.get(t.instanceId) ?? 0) >= effHp(t, state, role))
+    .map((t) => t.instanceId)
+  const spentKilling = destroyed.reduce(
+    (n, id) => n + effHp(targets.find((t) => t.instanceId === id)!, state, role),
+    0,
   )
-  const destroyed: string[] = []
-  let remaining = pool
-  for (const d of order) {
-    const need = effHp(d, state)
-    if (remaining >= need) {
-      remaining -= need
-      destroyed.push(d.instanceId)
-    } else if (damageOrderRank(d) === 0) {
-      // A Tank must be dealt with before anyone behind it — stop assigning.
-      break
-    }
-  }
-  return { destroyed, excess: remaining }
+  // Rule 460.2.c.4 only permits over-assignment once no unit is left to take
+  // damage — so excess exists only when the whole side is dead. A sub-lethal
+  // dump on a survivor was still assigned damage, not excess.
+  const wipe = destroyed.length === targets.length
+  return { destroyed, excess: wipe ? Math.max(0, pool - spentKilling) : 0 }
 }
 
-/** Health needed to kill this unit — full Might + Shield, regardless of Stun. */
-export function effHp(unit: UnitInPlay, _state: GameState): number {
-  const shield = keywordValue(unit, 'Shield') + (unit.counters.shield ?? 0)
-  return Math.max(1, lethalMight(unit) + shield - unit.damage)
+/**
+ * Damage still needed to kill this unit — its Might in `role` (Empowered boost,
+ * battlefield aura, and the role's Assault/Shield all included), minus damage
+ * already marked on it. `role` matters: an attacker keeps its Assault Might
+ * while the defenders' damage is assigned to it.
+ */
+export function effHp(unit: UnitInPlay, state?: GameState, role: CombatRole | null = null): number {
+  return Math.max(1, lethalMight(unit, state, role) - unit.damage)
 }
 
 /** True when a human should get to choose how `pool` damage lands on `targets`. */
-function manualChoice(state: GameState, assigner: PlayerSide, pool: number, targets: UnitInPlay[]): boolean {
+function manualChoice(
+  state: GameState,
+  assigner: PlayerSide,
+  pool: number,
+  targets: UnitInPlay[],
+  role: CombatRole,
+): boolean {
   if (assigner !== 'player' || pool <= 0 || targets.length < 2) return false
-  const total = targets.reduce((s, u) => s + effHp(u, state), 0)
+  const total = targets.reduce((s, u) => s + effHp(u, state, role), 0)
   return pool < total // if everything dies anyway there's nothing to choose
 }
 
@@ -60,6 +78,8 @@ export function validateAssignment(
 ): { destroyed: string[]; excess: number } | null {
   const pd = state.pendingDamage
   if (!pd) return null
+  // Stage 'def' assigns onto the defending units, stage 'atk' onto the attackers.
+  const role: CombatRole = pd.stage === 'def' ? 'defender' : 'attacker'
   const targets = pd.targetIds
     .map((id) => unitsAt(state.battlefields[pd.index], pd.stage === 'def' ? otherSide(pd.declarer) : pd.declarer).find((u) => u.instanceId === id))
     .filter((u): u is UnitInPlay => !!u)
@@ -80,40 +100,74 @@ export function validateAssignment(
     if ((byId.get(t.instanceId) ?? 0) <= 0) continue
     const rank = damageOrderRank(t)
     const blocked = targets.some(
-      (o) => damageOrderRank(o) < rank && (byId.get(o.instanceId) ?? 0) < effHp(o, state),
+      (o) => damageOrderRank(o) < rank && (byId.get(o.instanceId) ?? 0) < effHp(o, state, role),
     )
     if (blocked) return null
   }
 
   // Must not hold damage back while lethal targets remain.
-  const maxKillable = targets.reduce((s, u) => s + effHp(u, state), 0)
+  const maxKillable = targets.reduce((s, u) => s + effHp(u, state, role), 0)
   if (sum < Math.min(pd.pool, maxKillable)) return null
 
-  const destroyed = targets.filter((t) => (byId.get(t.instanceId) ?? 0) >= effHp(t, state)).map((t) => t.instanceId)
-  const excess = Math.max(0, pd.pool - destroyed.reduce((s, id) => s + effHp(targets.find((t) => t.instanceId === id)!, state), 0))
+  const destroyed = targets.filter((t) => (byId.get(t.instanceId) ?? 0) >= effHp(t, state, role)).map((t) => t.instanceId)
+
+  // 460.2.c.4 — a unit may only be given more than the minimum lethal amount
+  // once no other unit is left to take damage, i.e. the side is already wiped.
+  const wipe = destroyed.length === targets.length
+  if (!wipe) {
+    for (const t of targets) {
+      if ((byId.get(t.instanceId) ?? 0) > effHp(t, state, role)) return null
+    }
+  }
+
+  const excess = wipe
+    ? Math.max(0, pd.pool - targets.reduce((s, u) => s + effHp(u, state, role), 0))
+    : 0
   return { destroyed, excess }
 }
 
-/** Auto damage assignment as an explicit `DamageAssignment[]` (for the AI). */
+/**
+ * The single damage-assignment algorithm, as an explicit `DamageAssignment[]`.
+ * `autoAssign` summarises this rather than repeating the logic, so the preview,
+ * the AI and the resolver can never disagree about who dies.
+ */
 export function autoAssignmentList(
   pool: number,
   targets: UnitInPlay[],
   state: GameState,
+  role: CombatRole,
 ): DamageAssignment[] {
   const order = [...targets].sort(
-    (a, b) => damageOrderRank(a) - damageOrderRank(b) || effHp(a, state) - effHp(b, state) || b.card.might - a.card.might,
+    (a, b) =>
+      damageOrderRank(a) - damageOrderRank(b) ||
+      effHp(a, state, role) - effHp(b, state, role) ||
+      b.card.might - a.card.might,
   )
   const out: DamageAssignment[] = []
   let remaining = pool
+  let stalledOn: UnitInPlay | null = null
   for (const d of order) {
-    const need = effHp(d, state)
+    const need = effHp(d, state, role)
     if (remaining >= need) {
       out.push({ targetInstanceId: d.instanceId, amount: need })
       remaining -= need
-    } else if (damageOrderRank(d) === 0) {
-      if (remaining > 0) out.push({ targetInstanceId: d.instanceId, amount: remaining })
-      remaining = 0
-      break
+      continue
+    }
+    // Not enough left to kill this one. Everyone behind it is a *later* legal
+    // target than it is (Tank before normal before Backline, and inside a band
+    // the list is cheapest-first), so nothing further can be killed either.
+    stalledOn = d
+    break
+  }
+  // The whole pool must be assigned (460.2.c). Anything left goes onto the first
+  // unit we couldn't kill; if they all died, it piles onto the last kill as
+  // excess, which is the only case 460.2.c.4 allows over-assignment.
+  if (remaining > 0) {
+    const dump = stalledOn?.instanceId ?? out[out.length - 1]?.targetInstanceId
+    if (dump) {
+      const existing = out.find((a) => a.targetInstanceId === dump)
+      if (existing) existing.amount += remaining
+      else out.push({ targetInstanceId: dump, amount: remaining })
     }
   }
   return out
@@ -149,7 +203,7 @@ export function resolveShowdown(
   )
 
   // Stage 'def' — the declarer's damage lands on the defender's units.
-  if (!opts.forceAuto && manualChoice(next, declarer, atkMight, defenders)) {
+  if (!opts.forceAuto && manualChoice(next, declarer, atkMight, defenders, 'defender')) {
     return {
       ...next,
       pendingDamage: {
@@ -160,10 +214,10 @@ export function resolveShowdown(
       },
     }
   }
-  const def = autoAssign(atkMight, defenders, next)
+  const def = autoAssign(atkMight, defenders, next, 'defender')
 
   // Stage 'atk' — the defender's damage lands on the attacker's units.
-  if (!opts.forceAuto && manualChoice(next, defender, defMight, attackers)) {
+  if (!opts.forceAuto && manualChoice(next, defender, defMight, attackers, 'attacker')) {
     return {
       ...next,
       pendingDamage: {
@@ -174,7 +228,7 @@ export function resolveShowdown(
       },
     }
   }
-  const atk = autoAssign(defMight, attackers, next)
+  const atk = autoAssign(defMight, attackers, next, 'attacker')
   return finishShowdown(next, index, declarer, def.destroyed, atk.destroyed, def.excess)
 }
 
@@ -197,7 +251,7 @@ export function resumeShowdownFromAssignment(
   }
   // pd.stage === 'def' — human was the declarer; now the defender (AI) auto-assigns.
   const attackers = unitsAt(cleared.battlefields[pd.index], pd.declarer)
-  const atk = autoAssign(pd.otherPool, attackers, cleared)
+  const atk = autoAssign(pd.otherPool, attackers, cleared, 'attacker')
   return finishShowdown(cleared, pd.index, pd.declarer, stageDestroyed, atk.destroyed, stageExcess)
 }
 
@@ -212,6 +266,18 @@ function finishShowdown(
 ): GameState {
   const defender = otherSide(declarer)
   const before = controllerOf(state.battlefields[index])
+
+  // Snapshot both sides *before* anyone dies so the UI can explain the fight.
+  const preAttackers = unitsAt(state.battlefields[index], declarer)
+  const preDefenders = unitsAt(state.battlefields[index], defender)
+  const roster = (units: UnitInPlay[], role: 'attacker' | 'defender', dead: string[]) =>
+    units.map((u) => ({
+      name: u.card.name,
+      card: u.card,
+      might: showdownMight(state, u, role),
+      died: dead.includes(u.instanceId),
+    }))
+
   let next = state
 
   const emitFn = (s: GameState, e: Parameters<typeof emit>[1]) => emit(s, e)
@@ -234,12 +300,36 @@ function finishShowdown(
         : null
 
   const after = controllerOf(next.battlefields[index])
-  next = appendLog(
-    next,
-    `Battlefield ${index + 1} is now ${
-      after === 'open' ? 'open' : after === 'contested' ? 'still contested' : `controlled by ${after}`
-    }.`,
-  )
+  const bfName = next.battlefields[index]?.name ?? `battlefield ${index + 1}`
+  // Showdown damage is simultaneous, so the side with more Might can still lose
+  // all its units. Spell it out.
+  const takes = after === winner && before !== winner
+  const summary = winner
+    ? `${winner} destroyed all of ${otherSide(winner)}'s units — ${winner} ${
+        takes ? 'takes' : 'holds'
+      } ${bfName}.`
+    : after === 'open'
+      ? `both sides were wiped out — ${bfName} is now open (no one scores).`
+      : `neither side was cleared — ${declarer}'s units fall back to base.`
+  next = appendLog(next, `Showdown result: ${summary}`)
+
+  // Full report for the post-combat panel.
+  next = {
+    ...next,
+    lastShowdown: {
+      seq: (state.lastShowdown?.seq ?? 0) + 1,
+      index,
+      battlefieldName: bfName,
+      declarer,
+      attackerMight: preAttackers.reduce((n, u) => n + showdownMight(state, u, 'attacker'), 0),
+      defenderMight: preDefenders.reduce((n, u) => n + showdownMight(state, u, 'defender'), 0),
+      attackers: roster(preAttackers, 'attacker', atkDestroyed),
+      defenders: roster(preDefenders, 'defender', defDestroyed),
+      winner,
+      outcome: winner ? (takes ? 'conquered' : 'held') : after === 'open' ? 'wipeout' : 'inconclusive',
+      summary,
+    },
+  }
 
   if (winner) {
     // Bump per-turn combat-win counters (for "first time each turn" triggers),
@@ -273,10 +363,13 @@ function finishShowdown(
   if (inconclusive) {
     // Both sides survive → the attackers fall back to their base, exhausted.
     next = appendLog(next, `The showdown is inconclusive — ${declarer}'s units fall back to base.`)
+    // 461.1.a.2 recalls the attackers, and 453.1 says a Recall leaves the
+    // unit's state alone — so keep its exhausted status rather than forcing it
+    // (a unit readied mid-combat stays ready). Damage is already gone: the
+    // combat cleanup heals everything first (461.1.a.1).
     const retreating = unitsAt(next.battlefields[index], declarer).map((u) => ({
       ...u,
       location: { kind: 'base' as const },
-      exhausted: true,
       damage: 0,
     }))
     const declarerState = declarer === 'player' ? next.player : next.ai
@@ -306,7 +399,71 @@ function finishShowdown(
 
   // Surviving units heal — combat damage doesn't persist.
   next = mapAllUnits(next, (u) => (u.damage > 0 ? { ...u, damage: 0 } : u))
-  return next
+  // 461.5.c — control was just established, so any hidden card belonging to
+  // someone who no longer controls this battlefield is removed.
+  return clearOrphanedFacedown(next)
+}
+
+export interface ShowdownForecast {
+  attackerMight: number
+  defenderMight: number
+  /**
+   * Total damage needed to wipe each side. Usually equal to that side's Might —
+   * Might is health — but it diverges when units already carry damage or are
+   * stunned (a stunned unit contributes 0 Might yet still soaks its full Might),
+   * so the preview shows both rather than implying they always match.
+   */
+  attackerHealth: number
+  defenderHealth: number
+  attackerCount: number
+  defenderCount: number
+  /** Units each side would lose if it resolved right now (auto-assignment). */
+  attackerLosses: number
+  defenderLosses: number
+  outcome: 'conquer' | 'lose' | 'wipeout' | 'stalemate'
+}
+
+/**
+ * A pre-fight projection for the "should I declare?" decision: both sides'
+ * effective Might and how the damage would land. Uses auto-assignment, so a
+ * manual split can differ — it's a preview, not a promise.
+ */
+export function forecastShowdown(
+  state: GameState,
+  index: number,
+  declarer: PlayerSide,
+): ShowdownForecast | null {
+  const bf = state.battlefields[index]
+  if (!bf) return null
+  const attackers = unitsAt(bf, declarer)
+  const defenders = unitsAt(bf, otherSide(declarer))
+  if (attackers.length === 0 || defenders.length === 0) return null
+
+  const attackerMight = attackers.reduce((n, u) => n + showdownMight(state, u, 'attacker'), 0)
+  const defenderMight = defenders.reduce((n, u) => n + showdownMight(state, u, 'defender'), 0)
+  const defLost = autoAssign(attackerMight, defenders, state, 'defender').destroyed.length
+  const atkLost = autoAssign(defenderMight, attackers, state, 'attacker').destroyed.length
+  const atkLeft = attackers.length - atkLost
+  const defLeft = defenders.length - defLost
+
+  return {
+    attackerMight,
+    defenderMight,
+    attackerHealth: attackers.reduce((n, u) => n + effHp(u, state, 'attacker'), 0),
+    defenderHealth: defenders.reduce((n, u) => n + effHp(u, state, 'defender'), 0),
+    attackerCount: attackers.length,
+    defenderCount: defenders.length,
+    attackerLosses: atkLost,
+    defenderLosses: defLost,
+    outcome:
+      atkLeft > 0 && defLeft === 0
+        ? 'conquer'
+        : defLeft > 0 && atkLeft === 0
+          ? 'lose'
+          : atkLeft === 0 && defLeft === 0
+            ? 'wipeout'
+            : 'stalemate',
+  }
 }
 
 /** Battlefields where `side` has units and the opponent also has units. */

@@ -8,6 +8,7 @@ export {
   withinIdentity,
   spellTiming,
   unitPlayOptions,
+  totalPlayCost,
   castFlow,
   flowCost,
 } from './actions'
@@ -18,11 +19,14 @@ export {
   contestedBattlefields,
   effHp,
   autoAssignmentList,
+  forecastShowdown,
 } from './combat'
+export type { ShowdownForecast } from './combat'
 export { passPriority } from './stack'
 export { emit } from './events'
 export { scoreHolds, scoreConquer, checkVictory, controlledCount } from './scoring'
-export { canAfford, costOf } from './runes'
+export { canAfford, canRecycleRune, costOf } from './runes'
+export { effectiveCost } from './costs'
 export {
   showdownMight,
   deflectSurcharge,
@@ -35,7 +39,10 @@ export {
   hasGanking,
   hasTemporary,
   damageOrderRank,
+  combatRoleOf,
+  mightBreakdown,
 } from './keywords'
+export type { MightTerm } from './keywords'
 export {
   createToken,
   gainXP,
@@ -84,4 +91,4 @@ export {
   basePrintingId,
   samePrinting,
 } from './state'
-export { runAITurn, getAIActions } from './ai'
+export { runAITurn, stepAITurn, getAIActions } from './ai'

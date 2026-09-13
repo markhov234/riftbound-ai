@@ -4,6 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Riftbound AI</title>
+    <!--
+      Riot's own faces (Beaufort for LOL, Spiegel) are proprietary and can't be
+      redistributed, so these are the closest free stand-ins:
+        Marcellus  → Beaufort  (Roman-flavoured display serif)
+        Inter      → Spiegel   (humanist UI sans)
+      Noto KR keeps Korean in the same register instead of falling back to a
+      system face. Swapping in the real fonts is a one-line change in
+      tailwind.config.js if you ever have a licence for them.
+    -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Marcellus&family=Inter:wght@400;500;600;700&family=Noto+Serif+KR:wght@400;600&family=Noto+Sans+KR:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
   </head>
   <body>
     <div id="root"></div>

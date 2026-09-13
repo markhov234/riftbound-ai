@@ -12,6 +12,7 @@ import { emit } from './events'
 import { endTurn } from './phases'
 import { appendLog, findGear, findUnit, otherSide, updatePlayer } from './state'
 import {
+  attachGear,
   buff,
   dealDamage,
   discardChoice,
@@ -145,22 +146,39 @@ export function resolveTop(state: GameState): GameState {
 
   if ((item.kind === 'spell' || item.kind === 'gear') && item.card) {
     const script = scriptFor(item.card)
-    const ctx: EffectCtx = {
-      state: s,
-      controller: item.controller,
-      targets: item.targets,
-      paidAdditional: item.paidAdditional,
-      emit: (ns, ne) => emit(ns, ne),
-    }
     const gated = script?.play?.when && !script.play.when(s, undefined, item.controller)
     if (gated) {
       s = appendLog(s, `${item.card.name} has no effect.`)
     } else {
-      s = script?.play?.effect ? script.play.effect(ctx) : fallbackSpellEffect(s, item)
+      // [Repeat] — run the instructions once, then `item.repeat` more times
+      // (same targets; the paper game lets choices differ, we reuse them).
+      const runs = 1 + (item.repeat ?? 0)
+      for (let r = 0; r < runs; r++) {
+        if (r > 0) s = appendLog(s, `${item.card.name} repeats.`)
+        const ctx: EffectCtx = {
+          state: s,
+          controller: item.controller,
+          targets: item.targets,
+          paidAdditional: item.paidAdditional,
+          fromFacedown: item.fromFacedown,
+          emit: (ns, ne) => emit(ns, ne),
+        }
+        s = script?.play?.effect ? script.play.effect(ctx) : fallbackSpellEffect(s, item)
+      }
     }
     if (item.kind === 'gear') {
       // Gear stays in play as a permanent — it does NOT go to the trash.
       s = enterGear(s, item.controller, item.card)
+      // [Quick-Draw], and a facedown gear whose own text says to attach it
+      // (Edge of Night) — attach the freshly-entered gear to the chosen unit.
+      const selfAttaches =
+        item.fromFacedown && /attach (?:it|this) to a unit you control/i.test(item.card.text)
+      if (selfAttaches || /\[quick-draw\]/i.test(item.card.text)) {
+        const owned = s[item.controller].gear
+        const fresh = owned[owned.length - 1]
+        const unitId = item.targets.find((t) => t.kind === 'unit')?.instanceId
+        if (fresh && unitId) s = attachGear(s, fresh.instanceId, unitId)
+      }
     } else {
       // Spell → controller's trash, or banished if Flow-cast.
       s = updatePlayer(s, item.controller, (ps) =>
@@ -225,7 +243,7 @@ export function passPriority(state: GameState): GameState {
         priority: otherSide(state.priority),
       }
     }
-    let s = resolveTop({ ...state, passesInARow: 0 })
+    const s = resolveTop({ ...state, passesInARow: 0 })
     if (s.winner) return s
     // Whoever's turn it is regains priority to keep acting / respond.
     return { ...s, priority: s.activePlayer, passesInARow: 0 }

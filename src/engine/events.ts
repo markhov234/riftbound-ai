@@ -19,7 +19,7 @@ import { allUnits, appendLog, controllerOf, newChoiceId } from './state'
 export function autoPickChoice(
   state: GameState,
   controller: PlayerSide,
-  choice: { kind: TriggerChoice['kind']; max: number },
+  choice: { kind: TriggerChoice['kind'] | 'location' | 'confirm' | 'permanent'; max: number },
   legal: string[],
 ): string[] {
   const ps = controller === 'player' ? state.player : state.ai
@@ -186,6 +186,7 @@ export function emit(state: GameState, event: EngineEvent, depth = 0): GameState
           state,
           controller,
           source: liveSrc,
+          event,
           targets: autoTargetsForTrigger(state, controller, trigger, liveSrc),
           picks,
           emit: (ns, ne) => emit(ns, ne, depth + 1),
@@ -222,6 +223,32 @@ export function emit(state: GameState, event: EngineEvent, depth = 0): GameState
     }
   }
 
+  // Start-of-Beginning-Phase battlefield abilities (Frozen Fortress, Dusk Rose
+  // Lab). Every battlefield sees it; the clause decides whose phase it cares about.
+  if (event.type === 'TURN_BEGAN') {
+    for (const bf of s.battlefields) {
+      if (!bf.card) continue
+      for (const trig of battlefieldScript(bf.card).triggers) {
+        if (trig.on !== 'TURN_BEGAN') continue
+        s = runBattlefieldTrigger(s, event.side, trig, depth, event, bf.index)
+        if (s.winner) return s
+      }
+    }
+  }
+
+  // A battlefield may also watch cards being played (Abandoned Hall). Every
+  // battlefield sees it — the clause says "a player", not "you".
+  if (event.type === 'CARD_PLAYED') {
+    for (const bf of s.battlefields) {
+      if (!bf.card) continue
+      for (const trig of battlefieldScript(bf.card).triggers) {
+        if (trig.on !== 'CARD_PLAYED') continue
+        s = runBattlefieldTrigger(s, event.controller, trig, depth, event, bf.index)
+        if (s.winner) return s
+      }
+    }
+  }
+
   // Battlefield-scoped events (conquer / hold / defend "here").
   if (event.type === 'CONQUERED' || event.type === 'HELD' || event.type === 'DEFENDED') {
     const side = event.side
@@ -248,7 +275,7 @@ export function emit(state: GameState, event: EngineEvent, depth = 0): GameState
       for (const trig of battlefieldScript(card).triggers) {
         if (trig.on !== event.type) continue
         s = appendLog(s, `${s.battlefields[i].name}: ${side}'s ability triggers.`)
-        s = runBattlefieldTrigger(s, side, trig, depth)
+        s = runBattlefieldTrigger(s, side, trig, depth, event, i)
         if (s.winner) return s
       }
     }
@@ -262,11 +289,15 @@ function runBattlefieldTrigger(
   controller: PlayerSide,
   trig: BattlefieldTrigger,
   depth: number,
+  event?: EngineEvent,
+  battlefieldIndex?: number,
 ): GameState {
   const ctx: EffectCtx = {
     state,
     controller,
     source: undefined,
+    event,
+    battlefieldIndex,
     targets: autoTargetsForTrigger(
       state,
       controller,

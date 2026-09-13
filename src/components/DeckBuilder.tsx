@@ -3,9 +3,10 @@ import { Card, CardType, Domain, Deck, DeckEntry } from '../types/card'
 import { searchCards } from '../data/cardStore'
 import { loadDecks, saveDeck, deleteDeck, newDeck } from '../data/deckStore'
 import clsx from 'clsx'
-import { CardArt } from './CardArt'
+import { CardArt, domainKey } from './CardArt'
 import { isBanned } from '../data/bannedCards'
 import { isToken } from '../data/deckLegality'
+import { useT } from '../i18n'
 
 const DOMAIN_COLORS: Record<Domain, string> = {
   fury:      'bg-fury text-white',
@@ -38,6 +39,7 @@ interface CardRowProps {
 }
 
 function CardRow({ card, count, onAdd, onRemove }: CardRowProps) {
+  const t = useT()
   const banned = isBanned(card)
   const token = isToken(card)
   const blocked = banned // tokens are allowed — they go to the separate Token Pile
@@ -54,13 +56,13 @@ function CardRow({ card, count, onAdd, onRemove }: CardRowProps) {
         <CardArt card={card} size="sm" badge={false} />
       </div>
       {/* Cost badge */}
-      <span className="w-5 h-5 bg-accent text-black text-xs font-bold flex items-center justify-center shrink-0">
+      <span className="w-5 h-5 bg-panel2 text-txt text-xs font-bold flex items-center justify-center shrink-0">
         {card.energy}
       </span>
       {/* Type icon */}
       <span className="text-sm">{TYPE_ICONS[card.type]}</span>
       {/* Name */}
-      <span className="flex-1 text-xs text-txt truncate uppercase tracking-wide">
+      <span className="flex-1 text-sm text-txt truncate">
         {card.name}
         {banned && (
           <span className="ml-2 hud-label text-danger border border-danger px-1 align-middle">
@@ -76,7 +78,7 @@ function CardRow({ card, count, onAdd, onRemove }: CardRowProps) {
       {/* Domains */}
       <div className="flex gap-1 shrink-0">
         {card.domains.map((d) => (
-          <span key={d} className={clsx('text-[10px] px-1', DOMAIN_COLORS[d])}>
+          <span key={d} className={clsx('text-micro px-1', DOMAIN_COLORS[d])}>
             {d.slice(0, 3).toUpperCase()}
           </span>
         ))}
@@ -96,7 +98,7 @@ function CardRow({ card, count, onAdd, onRemove }: CardRowProps) {
           disabled={count >= cap || blocked}
           title={
             banned
-              ? 'Banned — cannot be added to a deck'
+              ? t('deck.banned')
               : token
                 ? 'Token — goes to the Token Pile, not the 40-card deck'
                 : undefined
@@ -114,6 +116,7 @@ interface Props {
 }
 
 export default function DeckBuilder({ allCards, onBack }: Props) {
+  const t = useT()
   const [decks, setDecks] = useState<Deck[]>([])
   const [activeDeck, setActiveDeck] = useState<Deck | null>(null)
 
@@ -179,7 +182,7 @@ export default function DeckBuilder({ allCards, onBack }: Props) {
   }
 
   const createDeck = () => {
-    const name = prompt('Deck name?')
+    const name = prompt(t('deck.namePrompt'))
     if (!name) return
     const d = newDeck(name)
     saveDeck(d)
@@ -188,7 +191,7 @@ export default function DeckBuilder({ allCards, onBack }: Props) {
   }
 
   const removeDeck = (id: string) => {
-    if (!confirm('Delete this deck?')) return
+    if (!confirm(t('deck.deleteConfirm'))) return
     deleteDeck(id)
     const remaining = decks.filter((d) => d.id !== id)
     setDecks(remaining)
@@ -199,8 +202,8 @@ export default function DeckBuilder({ allCards, onBack }: Props) {
     <div className="min-h-screen bg-bg text-txt flex flex-col">
       {/* Header */}
       <header className="flex items-center gap-4 px-6 py-3 bg-panel border-b border-line">
-        <button onClick={onBack} className="hud-label hover:text-accent">← Back</button>
-        <h1 className="text-sm font-bold uppercase tracking-[0.15em]">Deck Builder</h1>
+        <button onClick={onBack} className="hud-label hover:text-accent">{t('common.back')}</button>
+        <h1 className="display-face text-xl text-txt">{t('deck.title')}</h1>
         <div className="flex-1" />
         {/* Deck tabs */}
         <div className="flex items-center gap-2 overflow-x-auto">
@@ -209,15 +212,15 @@ export default function DeckBuilder({ allCards, onBack }: Props) {
               key={d.id}
               onClick={() => setActiveDeck(d)}
               className={clsx(
-                'px-3 py-1 text-[11px] uppercase tracking-wide whitespace-nowrap border',
+                'px-3 py-1.5 text-tiny whitespace-nowrap border transition-colors duration-200 ease-calm',
                 activeDeck?.id === d.id ? 'bg-accent text-black border-accent' : 'border-line text-txtDim hover:border-accent'
               )}
             >
               {d.name}
             </button>
           ))}
-          <button onClick={createDeck} className="px-3 py-1 border border-line text-[11px] uppercase tracking-wide text-txt hover:border-accent hover:text-accent">
-            + New
+          <button onClick={createDeck} className="px-3 py-1.5 border border-line text-tiny text-txtDim transition-colors duration-200 ease-calm hover:border-accent hover:text-accent">
+            {t('common.new')}
           </button>
         </div>
       </header>
@@ -230,7 +233,7 @@ export default function DeckBuilder({ allCards, onBack }: Props) {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search cards…"
+              placeholder={t('deck.search')}
               className="flex-1 min-w-[140px] px-3 py-1.5 bg-bg border border-line text-sm text-txt placeholder-txtFaint"
             />
             <select
@@ -238,9 +241,11 @@ export default function DeckBuilder({ allCards, onBack }: Props) {
               onChange={(e) => setTypeFilter(e.target.value as CardType | '')}
               className="px-2 py-1.5 bg-bg border border-line text-sm text-txt"
             >
-              <option value="">All types</option>
-              {FILTER_TYPES.map((t) => (
-                <option key={t} value={t}>{TYPE_ICONS[t]} {t}</option>
+              <option value="">{t('deck.allTypes')}</option>
+              {FILTER_TYPES.map((ct) => (
+                <option key={ct} value={ct}>
+                  {TYPE_ICONS[ct]} {t(`card.type.${ct}` as 'card.type.unit')}
+                </option>
               ))}
             </select>
             <select
@@ -248,12 +253,12 @@ export default function DeckBuilder({ allCards, onBack }: Props) {
               onChange={(e) => setDomainFilter(e.target.value as Domain | '')}
               className="px-2 py-1.5 bg-bg border border-line text-sm text-txt"
             >
-              <option value="">All domains</option>
+              <option value="">{t('deck.allDomains')}</option>
               {FILTER_DOMAINS.map((d) => (
-                <option key={d} value={d}>{d}</option>
+                <option key={d} value={d}>{t(domainKey(d))}</option>
               ))}
             </select>
-            <span className="hud-label">{filteredCards.length} cards</span>
+            <span className="hud-label">{t('deck.nCards', { n: filteredCards.length })}</span>
           </div>
 
           {/* Card list */}
@@ -268,7 +273,7 @@ export default function DeckBuilder({ allCards, onBack }: Props) {
               />
             ))}
             {filteredCards.length === 0 && (
-              <p className="text-center text-txtFaint mt-8">No cards found.</p>
+              <p className="text-center text-txtFaint mt-8">{t('deck.noCardsFound')}</p>
             )}
           </div>
         </div>
@@ -276,8 +281,8 @@ export default function DeckBuilder({ allCards, onBack }: Props) {
         {/* Right: deck list */}
         <div className="w-72 flex flex-col bg-panel overflow-hidden">
           <div className="flex items-center justify-between px-4 py-2 border-b border-line">
-            <h2 className="font-bold text-xs uppercase tracking-wide truncate">
-              {activeDeck ? activeDeck.name : 'No deck selected'}
+            <h2 className="font-medium text-sm truncate">
+              {activeDeck ? activeDeck.name : t('deck.noDeckSelected')}
             </h2>
             {activeDeck && (
               <div className="flex items-center gap-2">
@@ -287,13 +292,13 @@ export default function DeckBuilder({ allCards, onBack }: Props) {
                 <button
                   onClick={() => activeDeck && removeDeck(activeDeck.id)}
                   className="hud-label text-danger hover:text-danger"
-                >del</button>
+                >{t('common.delete')}</button>
               </div>
             )}
           </div>
 
           {!activeDeck && (
-            <p className="text-center text-txtFaint text-sm mt-8">Create a deck to start.</p>
+            <p className="text-center text-txtFaint text-sm mt-8">{t('deck.createToStart')}</p>
           )}
 
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -302,7 +307,7 @@ export default function DeckBuilder({ allCards, onBack }: Props) {
               if (!card) return null
               return (
                 <div key={entry.cardId} className="flex items-center gap-2 text-xs">
-                  <span className="w-5 h-5 bg-accent text-black text-xs font-bold flex items-center justify-center shrink-0">
+                  <span className="w-5 h-5 bg-panel2 text-txt text-xs font-bold flex items-center justify-center shrink-0">
                     {card.energy}
                   </span>
                   <span className="flex-1 truncate text-txt uppercase tracking-wide">{card.name}</span>
@@ -318,7 +323,8 @@ export default function DeckBuilder({ allCards, onBack }: Props) {
             {(activeDeck?.tokens?.length ?? 0) > 0 && (
               <div className="pt-2 mt-2 border-t border-line">
                 <div className="hud-label text-accent mb-1">
-                  Token Pile · {totalTokens} <span className="text-txtFaint">(not part of the 40)</span>
+                  {t('deck.tokenPile', { n: totalTokens })}{' '}
+                  <span className="text-txtFaint">{t('deck.tokenNote')}</span>
                 </div>
                 {activeDeck!.tokens!.map((entry) => {
                   const card = allCards.find((c) => c.id === entry.cardId)
@@ -337,16 +343,17 @@ export default function DeckBuilder({ allCards, onBack }: Props) {
                 })}
               </div>
             )}
+
           </div>
 
           {activeDeck && totalCards < 40 && (
             <div className="px-4 py-2 border-t border-line">
-              <p className="hud-label text-accent normal-case tracking-normal">Need {40 - totalCards} more cards</p>
+              <p className="hud-label text-accent normal-case tracking-normal">{t('deck.needMore', { n: 40 - totalCards })}</p>
             </div>
           )}
           {activeDeck && totalCards >= 40 && (
             <div className="px-4 py-2 border-t border-line">
-              <p className="hud-label text-accent normal-case tracking-normal">✓ Deck is ready to play</p>
+              <p className="hud-label text-accent normal-case tracking-normal">{t('deck.ready')}</p>
             </div>
           )}
         </div>

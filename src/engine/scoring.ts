@@ -14,10 +14,15 @@ function drawOne(state: GameState, side: PlayerSide): GameState {
 }
 
 /**
- * Award points, enforcing the final-point rule: your last point (the one that
- * would take you to VICTORY_SCORE) may only come from holding a battlefield or
- * from controlling every battlefield this turn. Any other final point is
- * refused — you stay at VICTORY_SCORE - 1 and draw a card instead.
+ * Award points for a Score (rule 466).
+ *
+ * 466.1 — "The player Gains up to one Point, depending on their current score."
+ * Scoring does *not* draw a card in general. The only draw in the scoring rules
+ * is 466.1.b.2: at one point short of the Victory Score, a Conquer without a
+ * sweep gains no point and "that player draws a card" instead. That draw is
+ * issued here, so the consolation can never drift away from the refusal that
+ * earns it — `scoreConquer` used to draw on *every* conquer, which handed both
+ * sides a free card almost every turn all game.
  */
 function award(
   state: GameState,
@@ -28,15 +33,22 @@ function award(
   let points = getPlayer(state, side).points
   let next = state
 
-  // Otterpus (replacement): a player's 1st/2nd-turn conquer/hold point becomes a
-  // draw instead. Symmetric — any Otterpus in play affects whoever is scoring.
+  // Otterpus — "If a player would score 1 point from conquering or holding
+  // during their first or second turn, they draw 1 instead."
+  //
+  // Deliberately symmetric: the card says "a player", so an Otterpus belonging
+  // to either side replaces either side's early point. `state.round` is the
+  // right clock for "their first or second turn": `turn` counts both players'
+  // turns from 0 and `round = floor(turn / 2) + 1`, so rounds 1-2 are exactly
+  // each player's first two turns, whoever went first.
   const otterpusOut = allUnits(state).some((u) => u.card.name === 'Otterpus')
+  const earlyTurns = state.round <= 2
 
   for (let i = 0; i < amount; i++) {
     // You win the instant you reach the Victory Score — further points from the
     // same hold/conquer don't accrue.
     if (points >= VICTORY_SCORE) break
-    if (otterpusOut && state.round <= 2 && (kind === 'conquer' || kind === 'hold')) {
+    if (otterpusOut && earlyTurns) {
       next = drawOne(next, side)
       next = appendLog(next, `Otterpus: ${side} draws instead of scoring an early point.`)
       continue
@@ -44,10 +56,11 @@ function award(
     const wouldWin = points + 1 >= VICTORY_SCORE
     const sweeping = controlledCount(state, side) === state.battlefields.length
     if (wouldWin && kind === 'conquer' && !sweeping) {
-      // Point refused; the caller (scoreConquer) still grants the conquer draw.
+      // 466.1.b.2 — no point, but this is the one case that draws a card.
+      next = drawOne(next, side)
       next = appendLog(
         next,
-        `${side} reached the Victory Score by conquering, but not by a hold or a sweep — no point.`,
+        `${side} reached the Victory Score by conquering, but not by a hold or a sweep — no point; draws 1 instead.`,
       )
       continue
     }
@@ -74,8 +87,9 @@ export function scoreHolds(state: GameState, side: PlayerSide): GameState {
 }
 
 /**
- * Take control of a battlefield by conquering it: +1 point (capped at once per
- * battlefield per turn), and draw a card if it doesn't win the game.
+ * Take control of a battlefield by conquering it: +1 point, capped at once per
+ * battlefield per turn (465). No draw — see `award` for the single case where
+ * a Conquer draws instead of scoring (466.1.b.2).
  */
 export function scoreConquer(state: GameState, side: PlayerSide, index: number): GameState {
   const bf = state.battlefields[index]
@@ -93,9 +107,7 @@ export function scoreConquer(state: GameState, side: PlayerSide, index: number):
     next = appendLog(next, `${side} conquers battlefield ${index + 1} (already scored here this turn).`)
   }
 
-  next = checkVictory(next)
-  if (!next.winner) next = drawOne(next, side) // "conquer that doesn't win → draw a card"
-  return next
+  return checkVictory(next)
 }
 
 export function checkVictory(state: GameState): GameState {

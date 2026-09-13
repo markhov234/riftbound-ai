@@ -15,6 +15,7 @@ import { resolveTargets, TargetSpec } from './abilities/targets'
 import { discard, recycleFromTrash } from './abilities/effects'
 import { SpellTiming } from './abilities/types'
 import { canActWhenSick, deflectSurcharge, hasGanking } from './keywords'
+import { canPlayFromFacedown, facedownAt, hideCard, takeFacedown } from './hidden'
 import { actedThisPriority, beginTurn, endTurn } from './phases'
 import { emit } from './events'
 import {
@@ -23,7 +24,8 @@ import {
   passPriority,
   pushToStack,
 } from './stack'
-import { channelRune, canAfford, Cost, costOf, payCost, recycleRune } from './runes'
+import { canAfford, Cost, costOf, payCost, recycleRune } from './runes'
+import { effectiveAbilityCost, effectiveCost } from './costs'
 import { scoreConquer } from './scoring'
 import {
   appendLog,
@@ -45,9 +47,9 @@ export function withinIdentity(card: Card, identity: string[]): boolean {
   return card.domains.every((d) => d === 'colorless' || identity.includes(d))
 }
 
-/** "You may pay X" options offered when a unit is played. */
+/** "You may pay X" options offered when a unit or spell is played. */
 export interface UnitPlayOption {
-  id: 'accelerate' | 'additional'
+  id: 'accelerate' | 'additional' | 'repeat'
   label: string
   extraEnergy: number
   extraDiscard: number
@@ -72,6 +74,31 @@ function pipLabel(energy: number, runes: Domain[], discard = 0): string {
   for (const r of runes) bits.push(r === 'colorless' ? '✦' : r.slice(0, 3).toUpperCase())
   if (discard) bits.push(`discard ${discard}`)
   return bits.join(', ')
+}
+
+/**
+ * What playing `card` actually costs once `opts` are paid — the base cost from
+ * `effectiveCost` (so battlefield discounts count), the card's own rune pips,
+ * and each option's extras on top.
+ *
+ * Both `playUnit`/`castCard` and the UI's "can I afford the toggle?" gate go
+ * through this. They used to derive it separately, and the UI's copy read the
+ * *printed* energy and ignored the base pips — so the Accelerate toggle would
+ * enable a play the engine then refused.
+ */
+export function totalPlayCost(
+  state: GameState,
+  side: PlayerSide,
+  card: Card,
+  opts: (UnitPlayOption | undefined)[],
+): Cost {
+  const paid = opts.filter((o): o is UnitPlayOption => !!o)
+  const base = effectiveCost(state, side, card)
+  return {
+    energy: base.energy + paid.reduce((n, o) => n + o.extraEnergy, 0),
+    power: base.power,
+    runes: [...(base.runes ?? []), ...paid.flatMap((o) => o.extraRunes)],
+  }
 }
 
 export function unitPlayOptions(card: Card): UnitPlayOption[] {
@@ -111,6 +138,24 @@ export function unitPlayOptions(card: Card): UnitPlayOption[] {
       extraRunes: runes,
     })
   }
+
+  // [Repeat] <cost> — an optional additional cost that resolves the spell's
+  // instructions one extra time. The pips sit right after the keyword (before
+  // any reminder paren); fall back to the reminder text.
+  if (/\[repeat\]/i.test(card.text)) {
+    const inline = card.text.match(/\[repeat\]\s*((?::rb_energy_\d+:|:rb_rune_[a-z]+:)+)/i)?.[1]
+    const reminder = card.text.match(/\[repeat\][^(]*\(([^)]*)\)/i)?.[1] ?? ''
+    const { energy, runes } = parsePips(inline ?? reminder)
+    if (energy > 0 || runes.length > 0) {
+      out.push({
+        id: 'repeat',
+        label: `Repeat (${pipLabel(energy, runes)}): resolve twice`,
+        extraEnergy: energy,
+        extraDiscard: 0,
+        extraRunes: runes,
+      })
+    }
+  }
   return out
 }
 
@@ -123,8 +168,9 @@ export function spellTiming(card: Card): SpellTiming {
   const script = scriptFor(card)
   if (script?.play?.timing) return script.play.timing
   const kw = card.keywords.map((k) => k.toLowerCase())
-  if (kw.includes('reaction')) return 'reaction'
-  if (kw.includes('action') || kw.includes('hidden')) return 'action'
+  // Quick-Draw gear has Reaction (glossary).
+  if (kw.includes('reaction') || kw.includes('quick-draw')) return 'reaction'
+  if (kw.includes('action')) return 'action'
   return 'sorcery'
 }
 
@@ -145,29 +191,72 @@ function timingAllows(state: GameState, side: PlayerSide, timing: SpellTiming): 
   )
 }
 
+/** The card is in `side`'s hand, or it's their un-played Chosen Champion in the
+ *  Champion Zone (matched by id — the UI may hold a stale reference). */
+export function isPlayableFrom(state: GameState, side: PlayerSide, card: Card): boolean {
+  const ps = getPlayer(state, side)
+  return ps.hand.some((c) => c.id === card.id) || ps.championZone?.id === card.id
+}
+
 function baseCastCheck(state: GameState, side: PlayerSide, card: Card): PlayCheck {
   if (state.winner) return { ok: false, reason: 'game over' }
-  if (!getPlayer(state, side).hand.includes(card)) {
+  if (!isPlayableFrom(state, side, card)) {
     return { ok: false, reason: 'card not in hand' }
   }
   if (!withinIdentity(card, getPlayer(state, side).identity)) {
     return { ok: false, reason: 'outside your domain identity' }
   }
-  if (!canAfford(state, side, costOf(card))) {
+  if (!canAfford(state, side, effectiveCost(state, side, card))) {
     return { ok: false, reason: 'not enough energy/power' }
   }
   return { ok: true }
 }
 
-/** Can `side` play `card` from hand right now? Units use sorcery timing. */
-export function canPlay(state: GameState, side: PlayerSide, card: Card): PlayCheck {
+/** Can `side` play `card` from hand right now? Units use sorcery timing, except
+ *  an `[Ambush]` unit played to a battlefield where you already control units,
+ *  which has Reaction while being placed there (glossary). */
+export function canPlay(
+  state: GameState,
+  side: PlayerSide,
+  card: Card,
+  to?: UnitLocation,
+  fromFacedown?: number,
+): PlayCheck {
   if (card.type === 'legend' || card.type === 'rune' || card.type === 'battlefield') {
     return { ok: false, reason: `cannot play a ${card.type} from hand` }
   }
+
+  // Played from the Facedown Zone: free (811.1.b "ignoring its base cost") and
+  // Reaction-timed (811.6), so none of the hand/affordability checks apply.
+  if (fromFacedown !== undefined) {
+    const fd = facedownAt(state, fromFacedown)
+    if (!fd || fd.card.id !== card.id) return { ok: false, reason: 'not the hidden card' }
+    const check = canPlayFromFacedown(state, side, fromFacedown)
+    if (!check.ok) return check
+    // 811.1.d.1 — a hidden permanent must be played to *that* battlefield, which
+    // is also the one case where gear may enter a battlefield rather than base.
+    if (card.type === 'unit' && to && !(to.kind === 'battlefield' && to.index === fromFacedown)) {
+      return { ok: false, reason: 'a hidden unit must be played to its own battlefield' }
+    }
+    if (!timingAllows(state, side, 'reaction')) {
+      return { ok: false, reason: "can't play a reaction-timed card now" }
+    }
+    return { ok: true }
+  }
+
   const base = baseCastCheck(state, side, card)
   if (!base.ok) return base
 
-  const timing = card.type === 'unit' ? 'sorcery' : spellTiming(card)
+  let timing: SpellTiming
+  if (card.type === 'unit') {
+    const ambushHere =
+      card.keywords.some((k) => k.toLowerCase() === 'ambush') &&
+      to?.kind === 'battlefield' &&
+      (state.battlefields[to.index]?.units.some((u) => u.owner === side) ?? false)
+    timing = ambushHere ? 'reaction' : 'sorcery'
+  } else {
+    timing = spellTiming(card)
+  }
   if (!timingAllows(state, side, timing)) {
     return { ok: false, reason: `can't play a ${timing}-timed card now` }
   }
@@ -195,6 +284,13 @@ export function canMove(
   if (to && to.kind === 'battlefield' && unit.location.kind === 'battlefield' && !hasGanking(unit, state)) {
     return { ok: false, reason: 'needs Ganking to move between battlefields' }
   }
+  // "Units can't move from here to base." (Vilemaw's Lair)
+  if (to?.kind === 'base' && unit.location.kind === 'battlefield') {
+    const from = state.battlefields[unit.location.index]?.card
+    if (from && /units can't move from here to base/i.test(from.text)) {
+      return { ok: false, reason: `units can't leave ${state.battlefields[unit.location.index].name}` }
+    }
+  }
   return { ok: true }
 }
 
@@ -209,19 +305,31 @@ export function canPlaceUnitAt(
   if (to.kind === 'base') return { ok: true }
   const bf = state.battlefields[to.index]
   if (!bf) return { ok: false, reason: 'no such battlefield' }
-  const haveUnitsThere = bf.units.some((u) => u.owner === side)
-  if (haveUnitsThere) return { ok: true }
+  // "Units can't be played here." (Rockfall Path) — moving in is still legal.
+  if (bf.card && /units can't be played here/i.test(bf.card.text)) {
+    return { ok: false, reason: `units can't be played at ${bf.name}` }
+  }
+  // 355.2.a — "By default, Valid locations include the controller's Base or a
+  // Battlefield the controller controls." Having units at a *contested*
+  // battlefield is not control, so it does not qualify.
+  if (controllerOf(bf) === side) return { ok: true }
+  // 355.2.b — a Game Effect may grant permission to an otherwise invalid spot.
   const openBfClause = /play me to an open battlefield/i.test(card.text)
   if (openBfClause && bf.units.length === 0) return { ok: true }
-  return { ok: false, reason: 'units enter at your base' }
+  return {
+    ok: false,
+    reason: bf.units.length > 0 ? `you don't control ${bf.name}` : 'units enter at your base',
+  }
 }
 
 // ── Play a unit (resolves immediately, not via the stack) ──────────────────
 
-function removeFirst<T>(arr: T[], item: T): T[] {
-  const i = arr.indexOf(item)
-  if (i < 0) return arr
-  return [...arr.slice(0, i), ...arr.slice(i + 1)]
+/** Remove `card` from `hand` by id (per-copy ids are unique), not by object
+ *  identity — the UI can hold a card reference from an earlier state. */
+function removeFromHand(hand: Card[], card: Card): Card[] {
+  const i = hand.findIndex((c) => c.id === card.id)
+  if (i < 0) return hand
+  return [...hand.slice(0, i), ...hand.slice(i + 1)]
 }
 
 function locLabel(to: UnitLocation): string {
@@ -235,8 +343,9 @@ function playUnit(
   to: UnitLocation,
   paidAccelerate: boolean,
   paidAdditional = false,
+  fromFacedown?: number,
 ): GameState {
-  const check = canPlay(state, side, card)
+  const check = canPlay(state, side, card, to, fromFacedown)
   if (!check.ok) return appendLog(state, `Can't play ${card.name}: ${check.reason}.`)
 
   // Only units (incl. champions) go on the board. A spell must resolve and be
@@ -245,8 +354,15 @@ function playUnit(
     return appendLog(state, `Can't play ${card.name}: only units can enter the board.`)
   }
 
-  const placement = canPlaceUnitAt(state, side, card, to)
-  if (!placement.ok) return appendLog(state, `Can't play ${card.name} there: ${placement.reason}.`)
+  // 811.1.d.1 — "A hidden permanent must be played to that battlefield" is a
+  // permission of the Hidden keyword (355.2.b), so it overrides the normal
+  // "only a battlefield you control" rule. `canPlay` has already pinned `to` to
+  // the battlefield it was hidden at, and a contested one is controlled by
+  // nobody — which is precisely when you want to spring it.
+  if (fromFacedown === undefined) {
+    const placement = canPlaceUnitAt(state, side, card, to)
+    if (!placement.ok) return appendLog(state, `Can't play ${card.name} there: ${placement.reason}.`)
+  }
 
   const opts = unitPlayOptions(card)
   const accelOpt = paidAccelerate ? opts.find((o) => o.id === 'accelerate') : undefined
@@ -257,23 +373,22 @@ function playUnit(
     (/enter ready if you have a card with my name in your trash/i.test(card.text) &&
       getPlayer(state, side).trash.some((c) => c.name === card.name))
   const addlOpt = paidAdditional ? opts.find((o) => o.id === 'additional') : undefined
-  const extra = (accelOpt?.extraEnergy ?? 0) + (addlOpt?.extraEnergy ?? 0)
-  const extraRunes = [...(accelOpt?.extraRunes ?? []), ...(addlOpt?.extraRunes ?? [])]
   const needDiscard = addlOpt?.extraDiscard ?? 0
   if (needDiscard > getPlayer(state, side).hand.filter((c) => c !== card).length) {
     return appendLog(state, `Can't play ${card.name}: nothing to discard for the additional cost.`)
   }
-  const base = costOf(card)
-  const unitCost: Cost = {
-    energy: card.energy + extra,
-    power: base.power,
-    runes: [...(base.runes ?? []), ...extraRunes],
-  }
+  // 811.1.b — from facedown it is played "ignoring its base cost". Accelerate
+  // and other *additional* costs are separate and would still be paid.
+  const unitCost =
+    fromFacedown !== undefined
+      ? { energy: 0, power: 0, runes: [] }
+      : totalPlayCost(state, side, card, [accelOpt, addlOpt])
   if (!canAfford(state, side, unitCost)) {
     return appendLog(state, `Can't play ${card.name}: not enough energy/runes for the extra cost.`)
   }
 
   let next = payCost(state, side, unitCost)
+  if (fromFacedown !== undefined) next = takeFacedown(next, fromFacedown)
 
   const unit: UnitInPlay = {
     instanceId: newInstanceId(),
@@ -284,14 +399,24 @@ function playUnit(
     // or a card-specific "enter ready" clause applies.
     exhausted: !enterReady,
     damage: 0,
-    counters: addlOpt ? { paidExtra: 1 } : {},
+    // Stamped so a "when you play me from face down" trigger can tell: the
+    // event system gives triggers no view of the zone the card came from.
+    counters: {
+      ...(addlOpt ? { paidExtra: 1 } : {}),
+      ...(fromFacedown !== undefined ? { playedFaceDown: 1 } : {}),
+    },
     sick: !enterReady,
   }
-  next = updatePlayer(next, side, (ps) => ({
-    ...ps,
-    hand: removeFirst(ps.hand, card),
-    championPlayed: ps.championPlayed || samePrinting(card, ps.chosenChampion),
-  }))
+  next = updatePlayer(next, side, (ps) => {
+    const fromZone = ps.championZone?.id === card.id
+    return {
+      ...ps,
+      // A facedown card was already out of hand when it was hidden.
+      hand: fromZone || fromFacedown !== undefined ? ps.hand : removeFromHand(ps.hand, card),
+      championZone: fromZone ? null : ps.championZone,
+      championPlayed: ps.championPlayed || fromZone || samePrinting(card, ps.chosenChampion),
+    }
+  })
   if (needDiscard > 0) {
     next = discard(next, side, needDiscard, (s, e) => emit(s, e))
   }
@@ -309,17 +434,28 @@ function playUnit(
   }
   next = appendLog(next, `${side} plays ${card.name}${locLabel(to)}.`)
 
-  next = registerCardPlayed(next, side, card)
+  next = registerCardPlayed(next, side, card, fromFacedown !== undefined)
   next = emit(next, { type: 'UNIT_ENTERED', instanceId: unit.instanceId, controller: side })
   return actedThisPriority(next)
 }
 
-function registerCardPlayed(state: GameState, side: PlayerSide, card: Card): GameState {
+function registerCardPlayed(
+  state: GameState,
+  side: PlayerSide,
+  card: Card,
+  fromFacedown = false,
+): GameState {
   const nth =
     side === state.activePlayer ? state.cardsPlayedThisTurn + 1 : state.cardsPlayedThisTurn
-  const next =
+  let next =
     side === state.activePlayer ? { ...state, cardsPlayedThisTurn: nth } : state
-  return emit(next, { type: 'CARD_PLAYED', card, controller: side, nth })
+  // A one-shot "your next card costs less" was already applied when this card's
+  // cost was computed, so spend it here — before the event, so a trigger on
+  // *this* play (Astral Heron) can set a fresh one for the card after it.
+  if (getPlayer(next, side).nextCardDiscount) {
+    next = updatePlayer(next, side, (ps) => ({ ...ps, nextCardDiscount: undefined }))
+  }
+  return emit(next, { type: 'CARD_PLAYED', card, controller: side, nth, fromFacedown })
 }
 
 // ── Cast a spell / gear (goes on the stack) ────────────────────────────────
@@ -331,8 +467,10 @@ function castCard(
   targetInstanceIds: string[],
   targetStackId?: string,
   paidAdditional = false,
+  paidRepeat = false,
+  fromFacedown?: number,
 ): GameState {
-  const check = canPlay(state, side, card)
+  const check = canPlay(state, side, card, undefined, fromFacedown)
   if (!check.ok) return appendLog(state, `Can't play ${card.name}: ${check.reason}.`)
 
   const specs: TargetSpec[] | undefined = scriptFor(card)?.play?.targets
@@ -344,35 +482,49 @@ function castCard(
   )
   if (targets === null) return appendLog(state, `Can't play ${card.name}: invalid targets.`)
 
+  const opts = unitPlayOptions(card)
   // Optional "additional cost to play" (Ruthless Strike, …).
-  const addl = paidAdditional ? unitPlayOptions(card).find((o) => o.id === 'additional') : undefined
+  const addl = paidAdditional ? opts.find((o) => o.id === 'additional') : undefined
   if (addl && addl.extraDiscard > getPlayer(state, side).hand.filter((c) => c !== card).length) {
     return appendLog(state, `Can't play ${card.name}: nothing to discard for the additional cost.`)
   }
+  // [Repeat] — optional additional cost to resolve the effect one extra time.
+  const rep = paidRepeat ? opts.find((o) => o.id === 'repeat') : undefined
 
   const surcharge = deflectCost(state, side, targets)
-  const base = costOf(card)
-  const cost: Cost = {
-    energy: base.energy + (addl?.extraEnergy ?? 0),
-    power: surcharge,
-    runes: [...(base.runes ?? []), ...(addl?.extraRunes ?? [])],
-  }
+  // `power` on a play cost is only ever the Deflect surcharge — a card's own
+  // pips live in `runes` — so it replaces the (always-zero) base power.
+  // From facedown the base cost is ignored (811.1.b); a Deflect surcharge is
+  // not a base cost, so it is still owed.
+  const cost: Cost =
+    fromFacedown !== undefined
+      ? { energy: 0, power: surcharge, runes: [] }
+      : { ...totalPlayCost(state, side, card, [addl, rep]), power: surcharge }
   if (!canAfford(state, side, cost)) {
     return appendLog(state, `Can't play ${card.name}: not enough energy/power/runes.`)
   }
 
   let next = payCost(state, side, cost)
   if (surcharge > 0) next = appendLog(next, `${side} pays +${surcharge} Power (Deflect).`)
-  next = updatePlayer(next, side, (ps) => ({ ...ps, hand: removeFirst(ps.hand, card) }))
+  // A "next gear ignores its Energy cost" grant (Jayce) is spent on this gear.
+  if (card.type === 'gear' && getPlayer(next, side).freeGearThisTurn) {
+    next = updatePlayer(next, side, (ps) => ({ ...ps, freeGearThisTurn: false }))
+    next = appendLog(next, `${side} plays ${card.name} ignoring its Energy cost.`)
+  }
+  if (fromFacedown !== undefined) next = takeFacedown(next, fromFacedown)
+  else next = updatePlayer(next, side, (ps) => ({ ...ps, hand: removeFromHand(ps.hand, card) }))
   if (addl && addl.extraDiscard > 0) {
     next = discard(next, side, addl.extraDiscard, (s, e) => emit(s, e))
     next = appendLog(next, `${side} pays the additional cost for ${card.name}.`)
   }
+  if (rep) next = appendLog(next, `${side} pays [Repeat] for ${card.name}.`)
   next = appendLog(next, `${side} plays ${card.name}.`)
-  next = registerCardPlayed(next, side, card)
+  next = registerCardPlayed(next, side, card, fromFacedown !== undefined)
   next = pushToStack(next, {
     ...makeSpellItem(side, card, targets),
     paidAdditional: !!addl,
+    ...(fromFacedown !== undefined ? { fromFacedown: true } : {}),
+    ...(rep ? { repeat: 1 } : {}),
   })
   return next
 }
@@ -490,8 +642,22 @@ function activateAbility(
   if (cost.disempowerSelf && !(isLegend ? legendEmp : source?.empowered)) {
     return appendLog(state, `${sourceCard.name} is not Empowered.`)
   }
-  const payCost_: Cost = { energy: cost.energy ?? 0, power: 0, runes: cost.runes }
-  if ((cost.energy || cost.runes?.length) && !canAfford(state, side, payCost_)) {
+  // Battlefield cost auras (Piltovan Forge, Risen Altar) discount *ability*
+  // costs, not card costs, so they are applied here rather than in
+  // `effectiveCost`. Without this the Jayce deck's own battlefields did nothing.
+  // Only units stand on a battlefield; gear is attached or at base.
+  const sourceBf =
+    unit && unit.location.kind === 'battlefield' ? unit.location.index : undefined
+  const payCost_: Cost = effectiveAbilityCost(state, side, {
+    source: sourceCard,
+    isEmpower: /^empower\b/i.test(ability.label ?? ''),
+    battlefieldIndex: sourceBf,
+    base: { energy: cost.energy ?? 0, power: 0, runes: cost.runes },
+  })
+  const discounted =
+    payCost_.energy !== (cost.energy ?? 0) ||
+    (payCost_.runes?.length ?? 0) !== (cost.runes?.length ?? 0)
+  if ((payCost_.energy || payCost_.runes?.length) && !canAfford(state, side, payCost_)) {
     return appendLog(state, `Not enough resources.`)
   }
   if (cost.recycleFromTrash && getPlayer(state, side).trash.length < cost.recycleFromTrash) {
@@ -503,6 +669,11 @@ function activateAbility(
 
   let next = state
   if (cost.energy || cost.runes?.length) next = payCost(next, side, payCost_)
+  // Piltovan Forge discounts only the first gear ability a turn — burn it here,
+  // once the activation has actually gone through.
+  if (discounted && sourceCard.type === 'gear') {
+    next = updatePlayer(next, side, (ps) => ({ ...ps, forgeDiscountUsed: true }))
+  }
   if (cost.recycleFromTrash) next = recycleFromTrash(next, side, cost.recycleFromTrash)
   if (cost.discard) next = discard(next, side, cost.discard, (s, e) => emit(s, e))
   if (cost.exhaustSelf) {
@@ -768,13 +939,15 @@ export function dispatch(
       return doMulligan(state, side, action.cardIndices)
     case 'KEEP_HAND':
       return keepHand(state, side)
-    case 'CHANNEL_RUNE':
-      return state.priority === side && state.stack.length === 0
-        ? actedThisPriority(channelRune(state, side))
-        : state
+    // There is deliberately no CHANNEL_RUNE action. Rule 430.3 makes channeling
+    // a **Limited Action** and 430.3.a is explicit: "Players may only channel
+    // runes when Game Effects direct them to do so." The legal sources are the
+    // Channel Phase (315.3.b.1 — 2 runes, +1 for going second per 480.7) and
+    // card effects; both call `channelRune` directly. Exposing it as a
+    // free action let either side drain its whole Rune Deck in one turn.
     case 'RECYCLE_RUNE':
       return state.priority === side && state.stack.length === 0
-        ? actedThisPriority(recycleRune(state, side))
+        ? actedThisPriority(recycleRune(state, side, action.runeId))
         : state
     case 'PLAY_UNIT':
       return playUnit(
@@ -784,6 +957,7 @@ export function dispatch(
         action.to,
         action.paidAccelerate ?? false,
         action.paidAdditional ?? false,
+        action.fromFacedown,
       )
     case 'PLAY_SPELL':
       return castCard(
@@ -793,9 +967,22 @@ export function dispatch(
         action.targetInstanceIds ?? [],
         action.targetStackId,
         action.paidAdditional ?? false,
+        action.paidRepeat ?? false,
+        action.fromFacedown,
       )
     case 'PLAY_GEAR':
-      return castCard(state, side, action.card, action.targetInstanceIds ?? [])
+      return castCard(
+        state,
+        side,
+        action.card,
+        action.targetInstanceIds ?? [],
+        undefined,
+        false,
+        false,
+        action.fromFacedown,
+      )
+    case 'HIDE_CARD':
+      return hideCard(state, side, action.card, action.index)
     case 'CAST_FLOW':
       return castFlow(
         state,

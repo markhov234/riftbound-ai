@@ -1,23 +1,36 @@
 import { ReactNode, useEffect } from 'react'
 import clsx from 'clsx'
+import { useLocale } from '../i18n'
+import { isTurnMarker, logLineKo, logWeight } from '../i18n/logText'
 
-/* Style-only primitives for the terminal / HUD reskin. No app logic. */
+/* Style-only primitives. No app logic.
+ *
+ * These set the tone for everything else on the board, so they are kept
+ * deliberately plain: one radius, one easing, borders only where they carry
+ * meaning. A primitive that decorates itself gets multiplied by every screen. */
 
 export function Panel({
   children,
   className,
   elevated,
+  outlined = true,
   onClick,
 }: {
   children: ReactNode
   className?: string
   elevated?: boolean
+  /** Draw the hairline. Off for panels that already sit on a darker ground. */
+  outlined?: boolean
   onClick?: () => void
 }) {
   return (
     <div
       onClick={onClick}
-      className={clsx('border border-line', elevated ? 'bg-panel2' : 'bg-panel', className)}
+      className={clsx(
+        elevated ? 'bg-panel2' : 'bg-panel',
+        outlined && 'border border-line',
+        className,
+      )}
     >
       {children}
     </div>
@@ -48,10 +61,17 @@ export function Btn({
       disabled={disabled}
       title={title}
       className={clsx(
-        'uppercase tracking-[0.1em] text-[11px] font-bold px-3 py-1.5 transition-colors disabled:opacity-35 disabled:cursor-not-allowed',
+        // Display serif in normal case. Uppercase + wide tracking on every
+        // control was a big part of why the UI read as generated chrome.
+        'display-face text-sm px-4 py-2 transition-all duration-200 ease-calm',
+        'disabled:opacity-35 disabled:cursor-not-allowed',
         variant === 'primary'
-          ? 'bg-accent text-black hover:bg-[#ff7038]'
-          : 'border border-line text-txt hover:border-accent hover:text-accent',
+          ? // The fill already separates it from the board; an outline and a
+            // drop shadow on top of that is three separations doing one job.
+            'bg-accent hover:bg-accentBright'
+          : // Ghost: no border at rest. It resolves into a button under the
+            // pointer, which keeps a toolbar of them from reading as a fence.
+            'text-txtDim border border-transparent hover:border-line hover:bg-panel hover:text-txt',
         className,
       )}
     >
@@ -81,7 +101,7 @@ export function Chip({
       <span className="hud-label">{label}</span>
       <span
         className={clsx(
-          'text-[13px] font-bold',
+          'text-sm font-bold',
           tone === 'accent' ? 'text-accent' : tone === 'danger' ? 'text-danger' : 'text-txt',
         )}
       >
@@ -114,7 +134,7 @@ export function SegmentBar({
           />
         ))}
       </div>
-      <span className="text-[11px] text-txtDim tabular-nums">
+      <span className="text-tiny text-txtDim tabular-nums">
         {value}/{max}
       </span>
     </div>
@@ -149,13 +169,13 @@ export function Modal({
   }, [onClose])
   return (
     <div
-      className="fixed inset-0 bg-black/75 z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 bg-black/75 z-50 flex items-center justify-center p-4 animate-[rb-fade_0.15s_ease-out]"
       onClick={onClose}
     >
       <div
         onClick={(e) => e.stopPropagation()}
         className={clsx(
-          'bg-panel border border-line max-h-[85vh] overflow-y-auto',
+          'bg-panel border border-line max-h-[85vh] overflow-y-auto animate-[rb-pop_0.2s_ease-out]',
           wide ? 'w-[720px] max-w-full' : 'max-w-2xl',
         )}
       >
@@ -174,29 +194,57 @@ export function Modal({
 const ACTOR_RE = /^(You|AI|Player|player|ai|Game|System|Battlefield|Showdown)\b/
 
 /** Render one `state.log` line with actor / verb coloring, terminal-style. */
-export function LogLine({ text, index }: { text: string; index: number }) {
+export function LogLine({ text }: { text: string }) {
+  const { locale } = useLocale()
+
+  if (isTurnMarker(text)) {
+    const who = text.replace(/^—s*|s*—$/g, '')
+    return (
+      <div className="flex items-center gap-2 pt-2 pb-1 first:pt-0">
+        <span className="h-px flex-1 bg-line2" />
+        <span className="hud-label text-txtFaint shrink-0">{who}</span>
+        <span className="h-px flex-1 bg-line2" />
+      </div>
+    )
+  }
+
+  const weight = logWeight(text)
+  // Colour the actor off the *English* line — that is where the actor word is
+  // in a known position — then render the Korean translation if there is one.
   const m = text.match(ACTOR_RE)
+  const actorClass = /you|player/i.test(m?.[0] ?? '')
+    ? 'text-accent'
+    : /ai/i.test(m?.[0] ?? '')
+      ? 'text-danger/90'
+      : 'text-txtDim'
+
+  if (locale === 'ko') {
+    const ko = logLineKo(text)
+    if (ko) {
+      // The translations put the actor first ("내가 …", "AI가 …", "AI의 …"),
+      // so the same colour coding still works.
+      const km = ko.match(/^(내가|나의|AI가|AI의)/)
+      return (
+        <p className={clsx('text-tiny leading-snug break-words', weight === 'minor' && 'opacity-55')}>
+          {km && <span className={clsx('font-bold', actorClass)}>{km[0]}</span>}
+          <span className={weight === 'major' ? 'text-txt' : 'text-txtDim'}>
+            {km ? ko.slice(km[0].length) : ko}
+          </span>
+        </p>
+      )
+    }
+  }
+
   let actor = ''
   let rest = text
   if (m) {
     actor = m[0]
     rest = text.slice(m[0].length)
   }
-  const actorClass = /you|player/i.test(actor)
-    ? 'text-accent'
-    : /ai/i.test(actor)
-      ? 'text-txt'
-      : 'text-txtDim'
   return (
-    <p className="text-[11px] leading-snug flex gap-2">
-      <span className="text-accentDim tabular-nums shrink-0">
-        {String(9 + Math.floor(index / 6)).padStart(2, '0')}:
-        {String((index * 7) % 60).padStart(2, '0')}
-      </span>
-      <span className="min-w-0">
-        {actor && <span className={clsx('font-bold uppercase', actorClass)}>{actor}</span>}
-        <span className="text-txtDim">{rest}</span>
-      </span>
+    <p className={clsx('text-tiny leading-snug break-words', weight === 'minor' && 'opacity-55')}>
+      {actor && <span className={clsx('font-bold uppercase', actorClass)}>{actor}</span>}
+      <span className={weight === 'major' ? 'text-txt' : 'text-txtDim'}>{rest}</span>
     </p>
   )
 }

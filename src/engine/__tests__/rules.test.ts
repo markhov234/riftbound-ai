@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { GameState, PlayerSide } from '../../types/game'
-import { canPlaceUnitAt, dispatch, unitPlayOptions } from '../actions'
+import { canPlaceUnitAt, canPlay, dispatch, totalPlayCost, unitPlayOptions } from '../actions'
+import { canAfford } from '../runes'
 import {
   accelRuneUnit,
   accelUnit,
   bolt,
   grunt,
+  makeCard,
   placeAtBase,
   placeUnitAt,
   startedGame,
@@ -56,6 +58,60 @@ describe('unit placement', () => {
     s = withEnergy(s, 'player', 9)
     s = dispatch(s, { type: 'PLAY_UNIT', card: champion, to: { kind: 'base' } }, 'player')
     expect(s.player.base[0].exhausted).toBe(true)
+  })
+
+  it('the Chosen Champion is played from the Champion Zone, not the hand', () => {
+    let s = startedGame({ firstPlayer: 'player' })
+    const champ = s.player.championZone!
+    expect(champ).toBeTruthy()
+    // It is NOT shuffled into the deck / hand.
+    expect(s.player.mainDeck.some((c) => c.id === champ.id)).toBe(false)
+    expect(s.player.hand.some((c) => c.id === champ.id)).toBe(false)
+
+    s = withEnergy(s, 'player', 12)
+    s = dispatch(s, { type: 'PLAY_UNIT', card: champ, to: { kind: 'base' } }, 'player')
+
+    expect(s.player.base.some((u) => u.card.id === champ.id)).toBe(true)
+    expect(s.player.championZone).toBeNull()
+    expect(s.player.championPlayed).toBe(true)
+
+    // Can't play it a second time.
+    const before = s
+    s = dispatch(s, { type: 'PLAY_UNIT', card: champ, to: { kind: 'base' } }, 'player')
+    expect(s.player.base.length).toBe(before.player.base.length)
+  })
+
+  it('[Ambush] — a unit played to a battlefield you occupy has Reaction timing there', () => {
+    const ambusher = makeCard({
+      name: 'Shadow Striker',
+      type: 'unit',
+      domains: ['fury'],
+      energy: 2,
+      might: 2,
+      keywords: ['Ambush'],
+      text: '[Ambush]',
+    })
+    const plain = makeCard({ name: 'Plain Recruit', type: 'unit', domains: ['fury'], energy: 2, might: 2 })
+
+    let s = startedGame({ firstPlayer: 'player' })
+    s = placeUnitAt(s, 'player', grunt, 0) // player controls bf 0
+    s = withEnergy(s, 'player', 9)
+    // A spell sits on the stack — sorcery timing is now blocked.
+    s = {
+      ...s,
+      priority: 'player',
+      stack: [
+        { id: 'x', kind: 'spell', controller: 'ai', scriptKey: 'play', targets: [], label: 'dummy' },
+      ],
+    } as GameState
+    s = withHand(s, 'player', [ambusher, plain])
+
+    const to = { kind: 'battlefield' as const, index: 0 }
+    expect(canPlay(s, 'player', ambusher, to).ok).toBe(true) // Reaction — allowed
+    expect(canPlay(s, 'player', plain, to).ok).toBe(false) // sorcery — blocked by the stack
+
+    // Away from a battlefield the player occupies, Ambush confers nothing special.
+    expect(canPlay(s, 'player', ambusher, { kind: 'base' }).ok).toBe(false)
   })
 })
 
@@ -210,5 +266,59 @@ describe('moving = attacking', () => {
     expect(s.log.some((l) => /Ganking/.test(l))).toBe(true)
     expect(at(s, 'player', 1)).toHaveLength(0)
     expect(at(before, 'player', 0)).toHaveLength(1)
+  })
+})
+
+describe('totalPlayCost is the single source of truth for play costs', () => {
+  // The Accelerate toggle in the UI used to re-derive this from the *printed*
+  // energy and ignore the card's own rune pips, so it enabled plays that
+  // `playUnit` then refused.
+  const accelPipUnit = makeCard({
+    name: 'Pip Accelerant',
+    type: 'unit',
+    domains: ['fury'],
+    energy: 2,
+    power: 1, // one :rb_rune_fury: pip of its own
+    keywords: ['Accelerate'],
+    text: '[Accelerate] (You may pay :rb_energy_1::rb_rune_fury: as an additional cost to have me enter ready.)',
+  })
+
+  it('counts the card’s own rune pips as well as the option’s', () => {
+    const s = startedGame({ firstPlayer: 'player' })
+    const opt = unitPlayOptions(accelPipUnit).find((o) => o.id === 'accelerate')!
+    const plain = totalPlayCost(s, 'player', accelPipUnit, [])
+    const accelerated = totalPlayCost(s, 'player', accelPipUnit, [opt])
+
+    expect(plain.energy).toBe(2)
+    expect(plain.runes).toHaveLength(1) // its own pip
+    expect(accelerated.energy).toBe(3) // +1 from Accelerate
+    expect(accelerated.runes).toHaveLength(2) // its pip + Accelerate's
+  })
+
+  it('agrees with what playUnit will actually accept', () => {
+    let s = startedGame({ firstPlayer: 'player' })
+    s = withHand(s, 'player', [accelPipUnit])
+    const opt = unitPlayOptions(accelPipUnit).find((o) => o.id === 'accelerate')!
+    const cost = totalPlayCost(s, 'player', accelPipUnit, [opt])
+
+    // Rune pips *float* — they cost a free channeled rune, not extra energy.
+    // With plenty of energy but only one free rune, the accelerated play needs
+    // two pips (the card's own plus Accelerate's) and must be refused. The old
+    // UI gate only counted the option's pips, so it said yes here.
+    const tight = {
+      ...s,
+      player: {
+        ...s.player,
+        runes: { ...s.player.runes, energy: 9, channeled: s.player.runes.channeled.slice(0, 1), spent: [] },
+      },
+    }
+    expect(canAfford(tight, 'player', cost)).toBe(false)
+    const refused = dispatch(
+      tight,
+      { type: 'PLAY_UNIT', card: accelPipUnit, to: { kind: 'base' }, paidAccelerate: true },
+      'player',
+    )
+    expect(refused.player.base).toHaveLength(0)
+    expect(refused.log.some((l) => /not enough/i.test(l))).toBe(true)
   })
 })

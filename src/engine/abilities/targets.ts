@@ -1,5 +1,5 @@
 import { Card } from '../../types/card'
-import { GameState, PlayerSide, ResolvedTarget, UnitInPlay } from '../../types/game'
+import { GameState, GearInPlay, PlayerSide, ResolvedTarget, UnitInPlay } from '../../types/game'
 import { allUnits, findUnit } from '../state'
 
 export type TargetKind =
@@ -30,6 +30,7 @@ export function legalGearTargets(
   if (spec.kind === 'otherGear' && source) {
     gear = gear.filter((g) => g.instanceId !== source.instanceId)
   }
+  if (spec.gearFilter) gear = gear.filter((g) => spec.gearFilter!(g, state))
   return gear
 }
 
@@ -38,7 +39,35 @@ export interface TargetSpec {
   count?: number // default 1
   optional?: boolean
   filter?: (u: UnitInPlay, state: GameState) => boolean
+  /** `filter` is unit-shaped, so gear kinds narrow with this instead. */
+  gearFilter?: (g: GearInPlay, state: GameState) => boolean
   spellFilter?: (card: Card, state: GameState) => boolean
+  /** What picking this target *does* — "to give +2 Might", "to deal 3 damage".
+   *  Shown in the targeting prompt so a multi-target spell is unambiguous. */
+  label?: string
+  /** Colours the highlight: a good thing for the target, or a bad one. */
+  intent?: 'buff' | 'harm'
+}
+
+/** "a friendly unit", "an enemy unit", … — the noun the UI prompts with. */
+export function targetKindLabel(kind: TargetKind): string {
+  switch (kind) {
+    case 'friendlyUnit':
+      return 'a friendly unit'
+    case 'enemyUnit':
+      return 'an enemy unit'
+    case 'unitAtBattlefield':
+      return 'a unit at a battlefield'
+    case 'gear':
+      return 'a gear'
+    case 'friendlyGear':
+    case 'otherGear':
+      return 'a friendly gear'
+    case 'stackSpell':
+      return 'a spell on the stack'
+    default:
+      return 'a unit'
+  }
 }
 
 /** All units that `chooser` could legally pick for this spec (before Deflect cost). */

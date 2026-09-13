@@ -38,7 +38,7 @@ describe('battlefield static auras', () => {
     s = onBf0(s, camp, tank)
     expect(battlefieldAura(s, s.battlefields[0].units[0]).might).toBe(1)
 
-    let s2 = onBf0(startedGame({ firstPlayer: 'player' }), camp) // plain grunt
+    const s2 = onBf0(startedGame({ firstPlayer: 'player' }), camp) // plain grunt
     expect(battlefieldAura(s2, s2.battlefields[0].units[0]).might).toBe(0)
   })
 

@@ -17,6 +17,8 @@ export interface PresetSpec {
   runes: Partial<Record<Domain, number>>
   /** Main deck (includes the chosen champion); quantities should sum to 40. */
   main: { name: string; qty: number }[]
+  /** Tournament sideboard, up to 10 cards. Never drawn — see `Deck.sideboard`. */
+  sideboard?: { name: string; qty: number }[]
 }
 
 export const PRESET_SPECS: PresetSpec[] = [
@@ -127,6 +129,54 @@ export const PRESET_SPECS: PresetSpec[] = [
       { name: 'Iterative Design', qty: 1 },
     ],
   },
+  {
+    // 薇古丝 by 扶光 — 4th of 122 at the S4 Fuzhou City Challenge, 2026-09-06.
+    // Transcribed card-for-card from riftdecks.com/riftbound-metagame/deck-wei-gu-si-286107.
+    // Unlike the decks above this one is *exact*: the main list already sums to
+    // 40, so the backfill never runs and no card is substituted.
+    id: 'preset-vex-gloomist',
+    name: 'Vex, Gloomist (Fuzhou 4th)',
+    legend: 'Vex, Gloomist',
+    chosenChampion: 'Vex, Apathetic',
+    battlefields: ['Abandoned Hall', 'Fortified Position', 'Startipped Peak'],
+    runes: { calm: 5, chaos: 7 },
+    main: [
+      // champion (1)
+      { name: 'Vex, Apathetic', qty: 1 },
+      // units (16)
+      { name: 'Steel Paws', qty: 3 },
+      { name: 'Evelynn, Entrancing', qty: 2 },
+      { name: 'Scuttle Crab', qty: 2 },
+      { name: 'Tideturner', qty: 2 },
+      { name: 'Tornado Warrior', qty: 3 },
+      { name: 'Irelia, Fervent', qty: 1 },
+      { name: 'Kharox', qty: 1 },
+      { name: 'Astral Heron', qty: 2 },
+      // gear (5)
+      { name: "Zhonya's Hourglass", qty: 2 },
+      { name: 'Boots of Swiftness', qty: 2 },
+      { name: 'Edge of Night', qty: 1 },
+      // spells (18)
+      { name: 'Charm', qty: 1 },
+      { name: 'Defy', qty: 3 },
+      { name: 'Stacked Deck', qty: 2 },
+      { name: 'Abandon', qty: 1 },
+      { name: 'Block', qty: 1 },
+      { name: 'Discipline', qty: 3 },
+      { name: 'Rebuke', qty: 2 },
+      { name: 'Ride the Wind', qty: 1 },
+      { name: 'Switcheroo', qty: 3 },
+      { name: 'Back Off', qty: 1 },
+    ],
+    sideboard: [
+      { name: 'Decree of Focus', qty: 2 },
+      { name: 'Gust', qty: 2 },
+      { name: 'Not So Fast', qty: 1 },
+      { name: 'Disarming Rake', qty: 2 },
+      { name: 'Ravenbloom Prefect', qty: 2 },
+      { name: 'Sanction', qty: 1 },
+    ],
+  },
 ]
 
 const RUNE_NAME: Record<Domain, string> = {
@@ -202,10 +252,9 @@ function buildOne(spec: PresetSpec, pool: Card[]): Deck {
     const card = resolve(name)
     if (card && !isBanned(card)) addEntry(cards, card.id, qty)
   }
-  // Guarantee the chosen champion is present.
-  if (champion && !cards.some((e) => e.cardId === champion.id)) {
-    addEntry(cards, champion.id, 3)
-  }
+  // The Chosen Champion is NOT shuffled into the Main Deck — it starts in the
+  // Champion Zone (setup.ts). Decks may still run up to 2 extra copies, but the
+  // presets don't bother.
   // Backfill with in-identity non-champion units so the deck has enough bodies
   // to actually contest battlefields (the specs above run light on units).
   const fillers = pool
@@ -221,6 +270,15 @@ function buildOne(spec: PresetSpec, pool: Card[]): Deck {
   fill(cards, MAIN_SIZE, fillers)
   trim(cards, MAIN_SIZE)
 
+  // Sideboard — recorded, never shuffled in. Sideboarding happens between games
+  // of a match and is illegal in game one, so a single game vs the AI can never
+  // reach these cards; they exist so a transcribed list stays a faithful copy.
+  const sideboard: DeckEntry[] = []
+  for (const { name, qty } of spec.sideboard ?? []) {
+    const card = resolve(name)
+    if (card && !isBanned(card)) addEntry(sideboard, card.id, qty)
+  }
+
   if (missing.length > 0) {
     console.warn(
       `[presetDecks] "${spec.name}": ${missing.length} card(s) not found in pool, backfilled — ${missing.join(', ')}`,
@@ -235,6 +293,7 @@ function buildOne(spec: PresetSpec, pool: Card[]): Deck {
     battlefieldIds,
     runes,
     cards,
+    ...(sideboard.length > 0 ? { sideboard } : {}),
     preset: true,
     createdAt: now,
     updatedAt: now,

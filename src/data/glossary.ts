@@ -9,7 +9,15 @@ export interface GlossaryEntry {
   text: string
 }
 
-export const GLOSSARY: Record<string, GlossaryEntry> = {
+/**
+ * English is transcribed verbatim from Riot's glossary — do not paraphrase it.
+ * Korean lives in `glossary.ko.ts`, keyed by these same keys (a missing key
+ * there is a compile error).
+ *
+ * `satisfies` rather than a `Record<string, …>` annotation so `GlossaryKey`
+ * stays a union of the literal keys.
+ */
+export const GLOSSARY = {
   accelerate: {
     term: 'Accelerate',
     kind: 'keyword',
@@ -209,7 +217,12 @@ export const GLOSSARY: Record<string, GlossaryEntry> = {
     kind: 'rule',
     text: 'Showdown damage beyond what was needed to kill the assigned units. Whoever conquers "assigns" that excess — some effects care how much.',
   },
-}
+} satisfies Record<string, GlossaryEntry>
+
+export type GlossaryKey = keyof typeof GLOSSARY
+
+/** Index-signature view, for the string-keyed lookups below. */
+const BY_KEY = GLOSSARY as Record<string, GlossaryEntry>
 
 // ── :rb_*: symbol tokens ──────────────────────────────────────────────────
 
@@ -260,7 +273,7 @@ export function lookupKeyword(token: string): GlossaryEntry | undefined {
   const inner = token.replace(/^\[|\]$/g, '').trim().toLowerCase()
   // Strip a trailing number / X: "assault 3" -> "assault"
   const base = inner.replace(/\s+(\d+|x)$/i, '').trim()
-  return GLOSSARY[base] ?? GLOSSARY[inner]
+  return BY_KEY[base] ?? BY_KEY[inner]
 }
 
 /** Plain game-terms highlighted in card text (no brackets): "token", "conquer", … */
@@ -275,7 +288,7 @@ export const PLAIN_TERMS = [
 ] as const
 
 export function lookupPlain(word: string): GlossaryEntry | undefined {
-  const entry = GLOSSARY[word.trim().toLowerCase()]
+  const entry = BY_KEY[word.trim().toLowerCase()]
   return entry?.kind === 'rule' ? entry : undefined
 }
 

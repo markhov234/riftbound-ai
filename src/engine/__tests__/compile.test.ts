@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   autoAbilities,
   compileEffect,
+  compileScript,
   compileTargets,
   _clearCompileCache,
 } from '../abilities/compile'
@@ -93,6 +94,23 @@ describe('compileEffect — templated clauses', () => {
     expect(t.card.might).toBe(3)
   })
 
+  it('"Move a unit with 3 Might or less." lets the player pick the destination', () => {
+    let s = startedGame({ firstPlayer: 'player' })
+    s = placeAtBase(s, 'player', grunt) // might 2 — passes the ≤3 filter
+    const id = s.player.base[0].instanceId
+
+    s = run('Move a unit with 3 :rb_might: or less.', s, [id])
+    // A destination pick is queued, not an immediate move-to-base.
+    expect(s.pendingChoices).toHaveLength(1)
+    expect(s.pendingChoices[0].kind).toBe('location')
+    expect(s.pendingChoices[0].legalIds).toContain('bf:0')
+    expect(s.player.base.some((u) => u.instanceId === id)).toBe(true) // still home
+
+    s = dispatch(s, { type: 'RESOLVE_CHOICE', pickedIds: ['bf:0'] }, 'player')
+    expect(s.battlefields[0].units.some((u) => u.instanceId === id)).toBe(true)
+    expect(s.player.base.some((u) => u.instanceId === id)).toBe(false)
+  })
+
   it('"Move a friendly unit and ready it." relocates + readies', () => {
     let s = startedGame({ firstPlayer: 'player' })
     s = placeUnitAt(s, 'player', grunt, 0)
@@ -109,13 +127,37 @@ describe('compileEffect — templated clauses', () => {
   })
 
   it('compileTargets reads the target phrase', () => {
-    expect(compileTargets('Deal 4 to a unit at a battlefield.')).toEqual([
-      { kind: 'unitAtBattlefield', filter: undefined },
+    expect(compileTargets('Deal 4 to a unit at a battlefield.')).toMatchObject([
+      { kind: 'unitAtBattlefield' },
     ])
     expect(compileTargets('Give a friendly unit +1 :rb_might: this turn.')[0].kind).toBe(
       'friendlyUnit',
     )
     expect(compileTargets('Draw 2.')).toEqual([])
+  })
+
+  it('each target slot carries what picking it does, for the prompt + ring colour', () => {
+    // A two-target spell: buff an ally, then debuff an enemy.
+    const specs = compileTargets(
+      'Give a friendly unit +2 :rb_might: this turn. Give an enemy unit -2 :rb_might: this turn.',
+    )
+    expect(specs).toHaveLength(2)
+    expect(specs[0]).toMatchObject({
+      kind: 'friendlyUnit',
+      intent: 'buff',
+      label: 'to give +2 Might this turn',
+    })
+    expect(specs[1]).toMatchObject({
+      kind: 'enemyUnit',
+      intent: 'harm',
+      label: 'to give −2 Might this turn',
+    })
+
+    expect(compileTargets('Deal 3 to an enemy unit.')[0]).toMatchObject({
+      intent: 'harm',
+      label: 'to deal 3 damage',
+    })
+    expect(compileTargets('Kill a unit.')[0]).toMatchObject({ intent: 'harm', label: 'to destroy it' })
   })
 })
 
@@ -200,6 +242,152 @@ describe('autoAbilities — keyword-driven', () => {
     const src = (empowered: boolean) => ({ empowered, instanceId: 'g1' }) as unknown as UnitInPlay
     expect(gated.when!({} as GameState, src(false), 'player')).toBe(false)
     expect(gated.when!({} as GameState, src(true), 'player')).toBe(true)
+  })
+})
+
+describe('autoAbilities — Legion / Level gates (from card text)', () => {
+  const ctxFor = (state: GameState): EffectCtx => ({
+    state,
+    controller: 'player',
+    source: state.player.base[0],
+    targets: [],
+    emit: (s) => s,
+  })
+
+  it('[Legion][>] trigger only fires once another card was played this turn', () => {
+    _clearCompileCache()
+    const card = makeCard({
+      name: 'Compiled Legionnaire',
+      type: 'unit',
+      domains: ['fury'],
+      energy: 1,
+      might: 2,
+      text: '[Legion][>] When I enter, draw 1.',
+    })
+    const s = placeAtBase(startedGame({ firstPlayer: 'player' }), 'player', card)
+    const trig = compileScript(card).triggers!.find((t) => t.on === 'UNIT_ENTERED')!
+    const hand0 = s.player.hand.length
+
+    // No other card played this turn → Legion inactive → no draw.
+    let out = trig.effect(ctxFor({ ...s, activePlayer: 'player', cardsPlayedThisTurn: 0 }))
+    expect(out.player.hand.length).toBe(hand0)
+
+    // Another Main Deck card already played (count ≥ 2) → Legion active → draw 1.
+    out = trig.effect(ctxFor({ ...s, activePlayer: 'player', cardsPlayedThisTurn: 2 }))
+    expect(out.player.hand.length).toBe(hand0 + 1)
+  })
+
+  it('[Level N][>] trigger only fires while the controller has N+ XP', () => {
+    _clearCompileCache()
+    const card = makeCard({
+      name: 'Compiled Veteran',
+      type: 'unit',
+      domains: ['fury'],
+      energy: 2,
+      might: 2,
+      text: '[Level 3][>] When I conquer, score 1 point.',
+    })
+    const s = placeAtBase(startedGame({ firstPlayer: 'player' }), 'player', card)
+    const trig = compileScript(card).triggers!.find((t) => t.on === 'CONQUERED')!
+
+    let out = trig.effect(ctxFor({ ...s, player: { ...s.player, xp: 0 } }))
+    expect(out.player.points).toBe(0)
+
+    out = trig.effect(ctxFor({ ...s, player: { ...s.player, xp: 3 } }))
+    expect(out.player.points).toBe(1)
+  })
+
+  it('[Level N][>] <cost>: <effect> activated ability carries a Level guard', () => {
+    _clearCompileCache()
+    const card = makeCard({
+      name: 'Compiled Adept',
+      type: 'unit',
+      domains: ['fury'],
+      energy: 2,
+      might: 2,
+      text: ':rb_exhaust:: Draw 1. [Level 4][>] :rb_energy_1:, :rb_exhaust:: Draw 2.',
+    })
+    const { activated } = autoAbilities(card)
+    const gated = activated.find((a) => /draw 2/i.test(a.label))!
+    expect(gated.when).toBeTypeOf('function')
+    expect(gated.when!({ player: { xp: 0 } } as unknown as GameState, undefined, 'player')).toBe(false)
+    expect(gated.when!({ player: { xp: 4 } } as unknown as GameState, undefined, 'player')).toBe(true)
+  })
+})
+
+describe('"when I attack, you may pay X to …" triggers', () => {
+  const poro = () =>
+    makeCard({
+      name: 'Sinister Poro',
+      type: 'unit',
+      domains: ['fury'],
+      energy: 2,
+      might: 1,
+      text: 'When I attack, you may pay :rb_energy_1: to move an enemy unit here to its base.',
+    })
+
+  it('prompts the player to pay instead of firing for free', () => {
+    _clearCompileCache()
+    const trig = compileScript(poro()).triggers!.find((t) => t.on === 'UNIT_MOVED')!
+    let s = startedGame({ firstPlayer: 'player' })
+    s = placeUnitAt(s, 'ai', grunt, 0) // something to push back
+    s = { ...s, player: { ...s.player, runes: { ...s.player.runes, energy: 3 } } }
+    const enemyId = at(s, 'ai')[0].instanceId
+
+    const ctx: EffectCtx = {
+      state: s,
+      controller: 'player',
+      targets: [{ kind: 'unit', instanceId: enemyId }],
+      emit: (x) => x,
+    }
+    const out = trig.effect(ctx)
+
+    // Nothing happened yet — a skippable "pay?" prompt is queued.
+    expect(out.pendingChoices).toHaveLength(1)
+    expect(out.pendingChoices[0].kind).toBe('confirm')
+    expect(out.pendingChoices[0].min).toBe(0) // "you may"
+    expect(out.pendingChoices[0].optionLabels?.[0]).toContain('⚡1')
+    expect(out.player.runes.energy).toBe(3) // not charged yet
+    expect(at(out, 'ai')).toHaveLength(1) // enemy still at the battlefield
+
+    // Paying charges the energy and sends the enemy unit home.
+    const paid = dispatch(out, { type: 'RESOLVE_CHOICE', pickedIds: ['pay'] }, 'player')
+    expect(paid.player.runes.energy).toBe(2)
+    expect(at(paid, 'ai')).toHaveLength(0)
+    expect(paid.ai.base.some((u) => u.instanceId === enemyId)).toBe(true)
+  })
+
+  it('declining costs nothing and does nothing', () => {
+    _clearCompileCache()
+    const trig = compileScript(poro()).triggers!.find((t) => t.on === 'UNIT_MOVED')!
+    let s = startedGame({ firstPlayer: 'player' })
+    s = placeUnitAt(s, 'ai', grunt, 0)
+    s = { ...s, player: { ...s.player, runes: { ...s.player.runes, energy: 3 } } }
+    const out = trig.effect({
+      state: s,
+      controller: 'player',
+      targets: [{ kind: 'unit', instanceId: at(s, 'ai')[0].instanceId }],
+      emit: (x) => x,
+    })
+    const declined = dispatch(out, { type: 'RESOLVE_CHOICE', pickedIds: [] }, 'player')
+    expect(declined.player.runes.energy).toBe(3)
+    expect(at(declined, 'ai')).toHaveLength(1)
+  })
+
+  it('is skipped outright when the controller cannot pay', () => {
+    _clearCompileCache()
+    const trig = compileScript(poro()).triggers!.find((t) => t.on === 'UNIT_MOVED')!
+    let s = startedGame({ firstPlayer: 'player' })
+    s = placeUnitAt(s, 'ai', grunt, 0)
+    s = { ...s, player: { ...s.player, runes: { ...s.player.runes, energy: 0 } } }
+    const out = trig.effect({
+      state: s,
+      controller: 'player',
+      targets: [{ kind: 'unit', instanceId: at(s, 'ai')[0].instanceId }],
+      emit: (x) => x,
+    })
+    expect(out.pendingChoices).toHaveLength(0)
+    expect(at(out, 'ai')).toHaveLength(1)
   })
 })
 

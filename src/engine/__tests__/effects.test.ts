@@ -97,18 +97,45 @@ describe('heal', () => {
 })
 
 describe('recall', () => {
-  it('moves a unit home and wipes damage + counters', () => {
+  // Rule 453.1: "Unless otherwise stated by the source of the Recall, Damage,
+  // Exhausted Status, Buffed Status, and applied Layer alterations will all
+  // remain unaffected by a Recall."
+  it('moves a unit home and leaves damage, buffs and exhaustion alone (453.1)', () => {
     let s = startedGame({ firstPlayer: 'player' })
     s = placeUnitAt(s, 'player', grunt, 0)
-    let id = s.battlefields[0].units[0].instanceId
+    const id = s.battlefields[0].units[0].instanceId
     s = giveMight(s, id, 2)
-    s = { ...s, battlefields: s.battlefields.map((bf) => ({ ...bf, units: bf.units.map((u) => ({ ...u, damage: 1 })) })) }
+    s = {
+      ...s,
+      battlefields: s.battlefields.map((bf) => ({
+        ...bf,
+        units: bf.units.map((u) => ({ ...u, damage: 1, exhausted: true })),
+      })),
+    }
 
     s = recall(s, id)
     expect(s.battlefields[0].units).toHaveLength(0)
     expect(s.player.base).toHaveLength(1)
+    expect(s.player.base[0].damage).toBe(1)
+    expect(s.player.base[0].counters.mightTurn).toBe(2)
+    expect(s.player.base[0].exhausted).toBe(true)
+  })
+
+  it('only heals or exhausts when the card says so', () => {
+    let s = startedGame({ firstPlayer: 'player' })
+    s = placeUnitAt(s, 'player', grunt, 0)
+    const id = s.battlefields[0].units[0].instanceId
+    s = {
+      ...s,
+      battlefields: s.battlefields.map((bf) => ({
+        ...bf,
+        units: bf.units.map((u) => ({ ...u, damage: 1 })),
+      })),
+    }
+    // Guardian Angel / Zhonya's: "Heal that unit, exhaust it, and recall it."
+    s = recall(s, id, { heal: true, exhaust: true })
     expect(s.player.base[0].damage).toBe(0)
-    expect(s.player.base[0].counters.mightTurn ?? 0).toBe(0)
+    expect(s.player.base[0].exhausted).toBe(true)
   })
 
   it('a recalled token ceases to exist', () => {

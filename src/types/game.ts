@@ -13,8 +13,7 @@ export const DECK_BATTLEFIELDS = 3
 export const OPENING_HAND = 4
 export const MAX_MULLIGAN = 2
 export const RUNES_PER_TURN = 2
-/** Hand size a player must discard down to at the end of their turn. */
-export const MAX_HAND_SIZE = 7
+// Riftbound has NO maximum hand size (RiftJudge ruling) — no end-of-turn discard.
 
 // A turn runs: awaken (ready + score holds + channel runes + draw) → action
 // (players alternate priority, two passes end it) → end (cleanup).
@@ -79,6 +78,20 @@ export interface Battlefield {
   units: UnitInPlay[]
   /** Sides that have already scored a point here this turn (1/turn cap). */
   scoredThisTurn: PlayerSide[]
+  /**
+   * The battlefield's Facedown Zone (107.3) — at most **one** card, and only
+   * from the player who controls the battlefield (107.3.c). Put here by the
+   * Hide action; playable from the next turn onward for free (811.1.b).
+   * Removed to its owner's trash once they lose control (107.3.d / 461.5.c).
+   */
+  facedown?: FacedownCard | null
+}
+
+export interface FacedownCard {
+  owner: PlayerSide
+  card: Card
+  /** The turn it was hidden — it can only be played on a *later* turn. */
+  turnHidden: number
 }
 
 // ── Runes / energy ────────────────────────────────────────────────────────
@@ -105,6 +118,10 @@ export interface PlayerState {
   points: number
   legend: Card
   chosenChampion: Card
+  /** The Chosen Champion starts here (a separate zone, not the Main Deck) and may
+   *  be played from it at any time on your turn. `null` once it has been played —
+   *  it cannot normally return. */
+  championZone: Card | null
   /** The legend's domain identity — every deck card must fit within this. */
   identity: Domain[]
 
@@ -128,8 +145,14 @@ export interface PlayerState {
   tokenPile: Card[]
 
   mulliganDone: boolean
-  /** True once this player's chosen champion has been played from hand. */
+  /** True once this player's Chosen Champion has been played from the Champion Zone. */
   championPlayed: boolean
+  /** The next gear played this turn costs 0 Energy (Jayce, Man of Progress); cleared each Awaken. */
+  freeGearThisTurn?: boolean
+  /** Piltovan Forge discounts only the FIRST gear ability each turn. */
+  forgeDiscountUsed?: boolean
+  /** One-shot discount on the *next* card played (Astral Heron); cleared once used. */
+  nextCardDiscount?: { energy: number; runes: number }
   /** The legend carries the Empowered status (Zed – Master of Shadows). */
   legendEmpowered?: boolean
   /** The legend is exhausted (used an "exhaust me" ability this turn). */
@@ -160,12 +183,23 @@ export interface StackItem {
   banishOnResolve?: boolean
   /** The caster paid the spell's optional "additional cost". */
   paidAdditional?: boolean
+  /** [Repeat] — the caster paid it; run the effect this many extra times on resolution. */
+  repeat?: number
+  /** Played from a Facedown Zone (811) — some play effects only fire then. */
+  fromFacedown?: boolean
 }
 
 // ── Engine events (drive triggered abilities) ─────────────────────────────
 
 export type EngineEvent =
-  | { type: 'CARD_PLAYED'; card: Card; controller: PlayerSide; nth: number }
+  | {
+      type: 'CARD_PLAYED'
+      card: Card
+      controller: PlayerSide
+      nth: number
+      /** Played out of a Facedown Zone (811) — some cards trigger only on that. */
+      fromFacedown?: boolean
+    }
   | { type: 'UNIT_ENTERED'; instanceId: string; controller: PlayerSide }
   | {
       type: 'UNIT_MOVED'
@@ -183,6 +217,36 @@ export type EngineEvent =
   | { type: 'COMBAT_WON'; side: PlayerSide; index: number; winnerInstanceIds: string[] }
   | { type: 'CARD_DISCARDED'; card: Card; owner: PlayerSide }
   | { type: 'TURN_ENDED'; side: PlayerSide }
+  /** Start of `side`'s Beginning Phase, before scoring (Frozen Fortress, Dusk Rose Lab). */
+  | { type: 'TURN_BEGAN'; side: PlayerSide; turn: number }
+
+// ── Showdown report (what the UI shows after combat) ─────────────────────
+
+export interface ShowdownCombatant {
+  name: string
+  card: Card
+  /** Effective Might this unit brought to the fight (its role's value). */
+  might: number
+  died: boolean
+}
+
+export interface ShowdownReport {
+  /** Bumped per showdown so the UI can tell a new report from a re-render. */
+  seq: number
+  index: number
+  battlefieldName: string
+  declarer: PlayerSide
+  /** Effective Might totals — the declarer attacks, the other side defends. */
+  attackerMight: number
+  defenderMight: number
+  attackers: ShowdownCombatant[]
+  defenders: ShowdownCombatant[]
+  /** Who cleared the other side, if anyone. */
+  winner: PlayerSide | null
+  outcome: 'conquered' | 'held' | 'wipeout' | 'inconclusive'
+  /** One-line plain-English explanation, mirrored into the log. */
+  summary: string
+}
 
 // ── Pending player choices (interactive trigger targets / picks) ──────────
 
@@ -190,11 +254,23 @@ export interface PendingChoice {
   id: string
   controller: PlayerSide
   label: string
-  kind: 'unit' | 'handCard' | 'trashCard' | 'deckTop' | 'keyword'
+  kind:
+    | 'unit'
+    | 'handCard'
+    | 'trashCard'
+    | 'deckTop'
+    | 'keyword'
+    | 'location'
+    | 'confirm'
+    /** A mixed list of board things — units, gear and runes together (Acceleration Gate). */
+    | 'permanent'
   min: number // 0 = "you may" (skippable), 1+ = mandatory
   max: number
-  /** Unit instanceIds, or card ids in the named zone, that may be picked. */
+  /** Unit instanceIds, card ids in the named zone, keyword strings, or (for
+   *  'location') `'base'` / `'bf:<index>'` tokens that may be picked. */
   legalIds: string[]
+  /** Parallel human-readable labels for `legalIds` (used by 'keyword' / 'location'). */
+  optionLabels?: string[]
   /** Re-enter the ability with the player's picks and return the new state. */
   resolve: (pickedIds: string[]) => (s: GameState) => GameState
 }
@@ -242,6 +318,9 @@ export interface GameState {
   flowGranted: string[]
   /** The most recent spell/ability to leave the stack — shown in the cast lane, cleared each Awaken. */
   lastResolved: { label: string; card: Card | null; outcome: 'resolved' | 'countered' } | null
+  /** The most recent showdown, kept so the UI can explain who died and why.
+   *  Cleared each Awaken; `seq` lets the UI tell a new one from a re-render. */
+  lastShowdown: ShowdownReport | null
   log: string[]
   winner: PlayerSide | null
   difficulty: AIDifficulty
@@ -256,14 +335,16 @@ export type DamageAssignment = { targetInstanceId: string; amount: number }
 export type GameAction =
   | { type: 'MULLIGAN'; cardIndices: number[] } // cards to send to bottom + redraw
   | { type: 'KEEP_HAND' }
-  | { type: 'CHANNEL_RUNE' }
-  | { type: 'RECYCLE_RUNE' }
+  /** `runeId` recycles that specific rune (163.2.b); omitted takes any. */
+  | { type: 'RECYCLE_RUNE'; runeId?: string }
   | {
       type: 'PLAY_UNIT'
       card: Card
       to: UnitLocation
       paidAccelerate?: boolean
       paidAdditional?: boolean
+      /** Battlefield index this was played from facedown (811.1.b) — free, Reaction-timed. */
+      fromFacedown?: number
     }
   | {
       type: 'PLAY_SPELL'
@@ -271,8 +352,12 @@ export type GameAction =
       targetInstanceIds?: string[]
       targetStackId?: string
       paidAdditional?: boolean
+      paidRepeat?: boolean
+      fromFacedown?: number
     }
-  | { type: 'PLAY_GEAR'; card: Card; targetInstanceIds?: string[] }
+  | { type: 'PLAY_GEAR'; card: Card; targetInstanceIds?: string[]; fromFacedown?: number }
+  /** Hide a `[Hidden]` card facedown at a battlefield you control, for 1 Power. */
+  | { type: 'HIDE_CARD'; card: Card; index: number }
   | { type: 'CAST_FLOW'; card: Card; targetInstanceIds?: string[]; targetStackId?: string }
   | {
       type: 'ACTIVATE_ABILITY'

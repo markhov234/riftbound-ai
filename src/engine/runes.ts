@@ -3,9 +3,9 @@ import { GameState, PlayerSide } from '../types/game'
 import { appendLog, getPlayer, updatePlayer } from './state'
 
 // Rune economy — close to paper Riftbound, with one documented simplification:
-//  - Each turn you channel RUNES_PER_TURN runes. Channeled runes STAY channeled
-//    for the rest of the game and ready each Awaken (paper sends recycled runes
-//    to the bottom of the Rune Deck; we keep them, so energy ramps).
+//  - Each turn you channel RUNES_PER_TURN runes. Channeled runes stay on the
+//    board and ready each Awaken, so Energy ramps — until you recycle one,
+//    which sends it back to the Rune Deck.
 //  - Each channeled rune contributes 1 Energy to your pool at Awaken
 //    (`energy = channeled.length`). Energy pays numeric costs.
 //  - A `:rb_rune_<domain>:` symbol in a cost is the Power pip. It is paid by
@@ -13,8 +13,10 @@ import { appendLog, getPlayer, updatePlayer } from './state'
 //    to rune floating the rune's Energy is already in the pool, so the pip costs
 //    NO extra Energy — it just needs a free matching rune, which is then marked
 //    spent for the turn (readies next Awaken instead of leaving the game).
-//  - `RECYCLE_RUNE` pulls a rune from the deck for 1 immediate generic "Power"
-//    (a separate pool used for Deflect surcharges); it returns next Awaken.
+//  - `RECYCLE_RUNE` converts ONE channeled rune into 1 Power (163.2.b), costing
+//    the Energy that rune was producing; the rune returns to the deck and is
+//    re-channeled at a later Awaken. Power pays Deflect surcharges and `[A]`
+//    costs such as Hidden's.
 
 export interface Cost {
   energy: number
@@ -102,11 +104,15 @@ export function channelRune(state: GameState, side: PlayerSide): GameState {
   return appendLog(next, `${side} channels a rune (+1 energy).`)
 }
 
-/** Recycle one rune: +1 power this turn only; the rune returns next Awaken. */
-export function recycleRune(state: GameState, side: PlayerSide): GameState {
+/**
+ * Channel a rune **exhausted** (Startipped Peak). It joins the channeled pile
+ * and is immediately counted as spent, so it produces no energy now but is
+ * available from your next Awaken — which is exactly what "exhausted" buys you.
+ */
+export function channelRuneExhausted(state: GameState, side: PlayerSide): GameState {
   const ps = getPlayer(state, side)
   if (ps.runes.deck.length === 0) {
-    return appendLog(state, `${side} has no runes left to recycle.`)
+    return appendLog(state, `${side} has no runes left to channel.`)
   }
   const [rune, ...rest] = ps.runes.deck
   const next = updatePlayer(state, side, (p) => ({
@@ -114,11 +120,52 @@ export function recycleRune(state: GameState, side: PlayerSide): GameState {
     runes: {
       ...p.runes,
       deck: rest,
+      channeled: [...p.runes.channeled, rune],
+      spent: [...p.runes.spent, rune],
+    },
+  }))
+  return appendLog(next, `${side} channels a rune exhausted (no energy this turn).`)
+}
+
+/**
+ * Recycle a rune you have on the board for 1 Power (163.2.b — "Recycle this:
+ * [Reaction] — Add [C]").
+ *
+ * These are **two separate abilities on the same rune**, not a choice between
+ * them (163.2): `[E]` exhausts it to add 1 Energy, and `Recycle this` sends it
+ * to the Rune Deck to add 1 Power. Nothing requires the rune to be ready to be
+ * recycled, so a rune you already exhausted for Energy can still be recycled —
+ * you keep the Energy floating in your Rune Pool (165) and gain the Power.
+ *
+ * This previously charged `energy - 1`, which modelled it as an either/or and
+ * made the two abilities mutually exclusive. The real price is the rune itself:
+ * it leaves the board, so it stops producing Energy from the next Awaken until
+ * the Channel Phase brings it back — at 2 a turn.
+ */
+export function recycleRune(state: GameState, side: PlayerSide, runeId?: string): GameState {
+  const ps = getPlayer(state, side)
+  // A rune already consumed to pay a `:rb_rune_*:` pip is spent for the turn.
+  const free = ps.runes.channeled.filter((r) => !ps.runes.spent.includes(r))
+  // `runeId` lets the board recycle the rune you actually clicked; without it
+  // any free rune will do (the AI and older callers).
+  const rune = runeId ? free.find((r) => r.id === runeId) : free[0]
+  if (!rune) return appendLog(state, `${side} has no rune to recycle.`)
+  const next = updatePlayer(state, side, (p) => ({
+    ...p,
+    runes: {
+      ...p.runes,
+      channeled: p.runes.channeled.filter((r) => r !== rune),
       recycled: [...p.runes.recycled, rune],
       power: p.runes.power + 1,
     },
   }))
   return appendLog(next, `${side} recycles a rune (+1 power).`)
+}
+
+/** Is there a rune on the board that `side` could still recycle (163.2.b)? */
+export function canRecycleRune(state: GameState, side: PlayerSide): boolean {
+  const ps = getPlayer(state, side)
+  return ps.runes.channeled.some((r) => !ps.runes.spent.includes(r))
 }
 
 /**

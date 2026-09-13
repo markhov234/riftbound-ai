@@ -11,7 +11,7 @@ import {
   counterStackItem,
   createToken,
   dealDamage,
-  digTopN,
+  digChoice,
   discardChoice,
   draw,
   empowerGear,
@@ -22,15 +22,19 @@ import {
   grantKeywordThisTurn,
   heal,
   killUnit,
+  moveChoice,
   moveUnitEffect,
+  optionalPayChoice,
   predictChoice,
   readyGear,
+  readyGearById,
   readyUnit,
   recall,
   scorePoints,
   stun,
 } from './effects'
-import { isEmpowered } from './statuses'
+import { isEmpowered, legionActive, levelActive } from './statuses'
+import type { Cost } from '../runes'
 import { TargetSpec } from './targets'
 import { ActivatedAbility, CardScript, TriggeredAbility } from './types'
 import { GameState, UnitInPlay } from '../../types/game'
@@ -116,6 +120,12 @@ function opsForClause(clause: string): Op[] {
   const c = clause
   const out: Op[] = []
   const side = (ctx: EffectCtx) => ctx.controller
+  /** Tag a spec with what picking it does, so the UI can prompt precisely. */
+  const tag = (spec: TargetSpec, label: string, intent?: 'buff' | 'harm'): TargetSpec => ({
+    ...spec,
+    label,
+    ...(intent ? { intent } : {}),
+  })
 
   // [Burn N]
   const burnM = c.match(/burn\]?\s*(\d+)/)
@@ -125,7 +135,7 @@ function opsForClause(clause: string): Op[] {
   const dealM = c.match(/deals?\s+(\d+)(?:\s+damage)?\s+to\s+([^.]*)/)
   if (dealM) {
     out.push({
-      spec: specFor(dealM[2]) ?? { kind: 'unit' },
+      spec: tag(specFor(dealM[2]) ?? { kind: 'unit' }, `to deal ${dealM[1]} damage`, 'harm'),
       run: (s, ctx, t) => (t ? dealDamage(s, t.instanceId, parseInt(dealM[1], 10), ctx.emit) : s),
     })
   }
@@ -137,8 +147,11 @@ function opsForClause(clause: string): Op[] {
     const n = parseInt(m[1].replace('−', '-'), 10)
     const perm = !/this turn/.test(c)
     const selfRef = /give\s+me\b/.test(m[0])
+    const label = `to give ${n > 0 ? '+' : '−'}${Math.abs(n)} Might${perm ? '' : ' this turn'}`
     out.push({
-      spec: selfRef ? { kind: 'self' } : specFor(m[0]) ?? { kind: 'unit' },
+      spec: selfRef
+        ? { kind: 'self' }
+        : tag(specFor(m[0]) ?? { kind: 'unit' }, label, n >= 0 ? 'buff' : 'harm'),
       run: (s, _ctx, t) =>
         t ? (perm ? giveMightPermanent(s, t.instanceId, n) : giveMight(s, t.instanceId, n)) : s,
     })
@@ -151,7 +164,9 @@ function opsForClause(clause: string): Op[] {
     const n = NUM(kwGrant[3], kwGrant[2] === 'assault' ? 3 : 1)
     const selfRef = /\bme\b/.test(kwGrant[1])
     out.push({
-      spec: selfRef ? { kind: 'self' } : specFor(kwGrant[1]) ?? { kind: 'unit' },
+      spec: selfRef
+        ? { kind: 'self' }
+        : tag(specFor(kwGrant[1]) ?? { kind: 'unit' }, `to grant [${kw} ${n}]`, 'buff'),
       run: (s, _ctx, t) => (t ? grantKeywordThisTurn(s, t.instanceId, kw, n) : s),
     })
   }
@@ -163,11 +178,15 @@ function opsForClause(clause: string): Op[] {
   if (retM) {
     const toBase = retM[2] === 'base'
     out.push({
-      spec: specFor(retM[1]) ?? { kind: 'unit' },
+      spec: tag(
+        specFor(retM[1]) ?? { kind: 'unit' },
+        toBase ? 'to send back to base' : 'to bounce to its owner’s hand',
+        'harm',
+      ),
       run: (s, ctx, t) =>
         t
           ? toBase
-            ? moveUnitEffect(s, t.instanceId, { kind: 'base' }, {}, ctx.emit)
+            ? moveUnitEffect(s, t.instanceId, { kind: 'base' }, { by: side(ctx) }, ctx.emit)
             : bounceUnit(s, t.instanceId)
           : s,
     })
@@ -175,7 +194,10 @@ function opsForClause(clause: string): Op[] {
 
   // Recall <target>
   if (/\brecall\b/.test(c) && !retM) {
-    out.push({ spec: specFor(c) ?? { kind: 'unit' }, run: (s, _c, t) => (t ? recall(s, t.instanceId) : s) })
+    out.push({
+      spec: tag(specFor(c) ?? { kind: 'unit' }, 'to recall (back to base, fully healed)'),
+      run: (s, _c, t) => (t ? recall(s, t.instanceId) : s),
+    })
   }
 
   // Ready N runes
@@ -186,7 +208,21 @@ function opsForClause(clause: string): Op[] {
   const readyGearM = c.match(/ready\s+(a|\d+)\s+gear/)
   if (readyGearM) {
     const n = readyGearM[1] === 'a' ? 1 : parseInt(readyGearM[1], 10)
-    out.push({ run: (s, ctx) => readyGear(s, side(ctx), n) })
+    if (n === 1) {
+      // Let the controller pick *which* gear — readying the first exhausted one
+      // in array order is not a decision the player should lose.
+      out.push({
+        spec: tag(
+          { kind: 'friendlyGear', gearFilter: (g) => g.exhausted },
+          'to ready it',
+          'buff',
+        ),
+        run: (s, ctx, t) =>
+          t?.instanceId ? readyGearById(s, t.instanceId) : readyGear(s, side(ctx), 1),
+      })
+    } else {
+      out.push({ run: (s, ctx) => readyGear(s, side(ctx), n) })
+    }
   }
 
   // Empower (another | a) gear  (Hextech Formula)
@@ -205,23 +241,32 @@ function opsForClause(clause: string): Op[] {
   const moveReady = c.match(/move\s+(?:a\s+)?(?:friendly\s+)?unit\s+and\s+ready\s+it/)
   if (moveReady) {
     out.push({
-      spec: { kind: 'friendlyUnit' },
+      spec: tag({ kind: 'friendlyUnit' }, 'to move it home and ready it', 'buff'),
       run: (s, ctx, t) =>
-        t ? moveUnitEffect(s, t.instanceId, { kind: 'base' }, { ready: true }, ctx.emit) : s,
+        t
+          ? moveUnitEffect(s, t.instanceId, { kind: 'base' }, { ready: true, by: side(ctx) }, ctx.emit)
+          : s,
     })
   } else if (readyUnitM && !readyRunes) {
     out.push({
-      spec: specFor(c) ?? { kind: 'unit' },
+      spec: tag(specFor(c) ?? { kind: 'unit' }, 'to ready it', 'buff'),
       run: (s, _c, t) => (t ? readyUnit(s, t.instanceId) : s),
     })
   }
 
-  // Plain "Move <up to N> <friendly> unit(s) [to base]"  (no "and ready")
-  if (!moveReady && /\bmove\s+(?:up to \d+\s+)?(?:a\s+|two\s+)?(?:friendly\s+)?units?\b/.test(c)) {
+  // Plain "Move <a> unit [with N Might or less]" (Twilight Step, Fight or Flight)
+  // — the controller picks the destination (any base or battlefield), not just
+  // "home". "…to base" / "…and ready it" keep their explicit destination above.
+  if (!moveReady && /\bmove\s+(?:up to \d+\s+)?(?:a\s+|an\s+|two\s+)?(?:friendly\s+|enemy\s+)?units?\b/.test(c)) {
+    const toBase = /to (?:its (?:owner'?s )?|your |the )?base\b/.test(c)
     out.push({
-      spec: { kind: 'friendlyUnit' },
+      spec: tag(specFor(c) ?? { kind: 'unit' }, toBase ? 'to send back to base' : 'to move'),
       run: (s, ctx, t) =>
-        t ? moveUnitEffect(s, t.instanceId, { kind: 'base' }, {}, ctx.emit) : s,
+        t
+          ? toBase
+            ? moveUnitEffect(s, t.instanceId, { kind: 'base' }, { by: side(ctx) }, ctx.emit)
+            : moveChoice(s, ctx.controller, t.instanceId, ctx.emit)
+          : s,
     })
   }
 
@@ -253,26 +298,34 @@ function opsForClause(clause: string): Op[] {
 
   // Stun / Buff / Heal a unit
   if (/\bstun\b/.test(c) && !out.length)
-    out.push({ spec: specFor(c) ?? { kind: 'unit' }, run: (s, _c, t) => (t ? stun(s, t.instanceId) : s) })
+    out.push({
+      spec: tag(specFor(c) ?? { kind: 'unit' }, 'to stun (0 Might in combat)', 'harm'),
+      run: (s, _c, t) => (t ? stun(s, t.instanceId) : s),
+    })
   if (/\bbuff\b/.test(c))
-    out.push({ spec: specFor(c) ?? { kind: 'unit' }, run: (s, _c, t) => (t ? buff(s, t.instanceId) : s) })
+    out.push({
+      spec: tag(specFor(c) ?? { kind: 'unit' }, 'to buff (+1 Might)', 'buff'),
+      run: (s, _c, t) => (t ? buff(s, t.instanceId) : s),
+    })
   if (/\bheal\b/.test(c))
     out.push({
-      spec: /\bme\b/.test(c) ? { kind: 'self' } : specFor(c) ?? { kind: 'unit' },
+      spec: /\bme\b/.test(c)
+        ? { kind: 'self' }
+        : tag(specFor(c) ?? { kind: 'unit' }, 'to heal its damage', 'buff'),
       run: (s, _c, t) => (t ? heal(s, t.instanceId) : s),
     })
 
   // Kill <target>
   if (/\bkill\s+(?:a\s+)?(?:friendly\s+|enemy\s+)?unit/.test(c))
     out.push({
-      spec: specFor(c) ?? { kind: 'unit' },
+      spec: tag(specFor(c) ?? { kind: 'unit' }, 'to destroy it', 'harm'),
       run: (s, ctx, t) => (t ? killUnit(s, t.instanceId, ctx.emit) : s),
     })
 
   // Counter a spell
   if (/counter a spell/.test(c))
     out.push({
-      spec: { kind: 'stackSpell' },
+      spec: { kind: 'stackSpell', label: 'to counter it', intent: 'harm' },
       run: (s, ctx) => {
         const t = ctx.targets.find((x) => x.kind === 'stackItem')
         return t?.stackItemId ? counterStackItem(s, t.stackItemId) : s
@@ -281,7 +334,7 @@ function opsForClause(clause: string): Op[] {
 
   // Look at the top N … put 1 into your hand and recycle the rest
   const digM = c.match(/look at the top (\d+) cards? of your main deck\. .*put 1 into your hand/)
-  if (digM) out.push({ run: (s, ctx) => digTopN(s, side(ctx), parseInt(digM[1], 10), 1) })
+  if (digM) out.push({ run: (s, ctx) => digChoice(s, side(ctx), parseInt(digM[1], 10), 1) })
 
   return out
 }
@@ -308,7 +361,7 @@ function drawOps(text: string): Op[] {
     ops.push({ run: (s, ctx) => predictChoice(s, side(ctx), x, drawThen(ctx)) })
     drawConsumed = drawN > 0
   } else if (digM) {
-    ops.push({ run: (s, ctx) => digTopN(s, side(ctx), parseInt(digM[1], 10), 1) })
+    ops.push({ run: (s, ctx) => digChoice(s, side(ctx), parseInt(digM[1], 10), 1) })
   } else if (disM && !disIsCost) {
     const n = NUM(disM[1])
     ops.push({ run: (s, ctx) => discardChoice(s, side(ctx), n, drawThen(ctx)) })
@@ -503,6 +556,23 @@ export function autoAbilities(card: Card): {
     })
   }
 
+  // [Weaponmaster] — on entering play, attach a controlled Equipment to itself.
+  // (Simplified: the paper keyword lets you pay its Equip cost minus 1 energy and
+  //  choose which; we auto-attach the first unattached Equipment for free.)
+  if (/\[weaponmaster\]/i.test(dec)) {
+    triggers.push({
+      on: 'UNIT_ENTERED',
+      self: true,
+      effect: (ctx) => {
+        if (!ctx.source) return ctx.state
+        const g = ctx.state[ctx.controller].gear.find(
+          (x) => !x.attachedTo && /\bequip\b/i.test(x.card.text),
+        )
+        return g ? attachGear(ctx.state, g.instanceId, ctx.source.instanceId) : ctx.state
+      },
+    })
+  }
+
   // [Deathknell][>] <clause>
   const dk = dec.match(/\[deathknell\]\[>\]\s*([^.]*(?:\.[^.]*)?)/i)
   if (dk) {
@@ -514,19 +584,37 @@ export function autoAbilities(card: Card): {
   // Merge an "If [Empowered], … instead." sentence back onto the ability it modifies.
   // A bare "[Empowered]" marker (from "[Empowered][>] <cost>: <effect>") gates the
   // ability that follows it — track it rather than emitting it as a clause.
-  const abilityClauses: { text: string; empGated: boolean }[] = []
+  const abilityClauses: { text: string; empGated: boolean; legionGated: boolean; levelGated: number }[] = []
   let pendingEmpGate = false
+  let pendingLegionGate = false
+  let pendingLevelGate = 0
   for (const cl of rawClauses(card.text)) {
     if (/^\[empowered\]\.?\s*$/i.test(cl)) {
       pendingEmpGate = true
+      continue
+    }
+    if (/^\[legion\]\.?\s*$/i.test(cl)) {
+      pendingLegionGate = true
+      continue
+    }
+    const lvlMark = cl.match(/^\[level\s+(\d+)\]\.?\s*$/i)
+    if (lvlMark) {
+      pendingLevelGate = parseInt(lvlMark[1], 10)
       continue
     }
     if (/^if (?:this is|i(?:'|’)?m|you)\b/i.test(cl) && abilityClauses.length) {
       const last = abilityClauses[abilityClauses.length - 1]
       last.text = last.text.replace(/\.\s*$/, '') + `. ${cl}`
     } else {
-      abilityClauses.push({ text: cl, empGated: pendingEmpGate })
+      abilityClauses.push({
+        text: cl,
+        empGated: pendingEmpGate,
+        legionGated: pendingLegionGate,
+        levelGated: pendingLevelGate,
+      })
       pendingEmpGate = false
+      pendingLegionGate = false
+      pendingLevelGate = 0
     }
   }
   const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -535,7 +623,7 @@ export function autoAbilities(card: Card): {
       `|^\\[equip\\]\\s*(?:—\\s*)?${equipCost ? esc(equipCost) : ''}\\s*`,
     'i',
   )
-  for (const { text: rawClause, empGated } of abilityClauses) {
+  for (const { text: rawClause, empGated, legionGated, levelGated } of abilityClauses) {
     // Drop a leading "[Empower] <cost>" / "[Equip] <cost>" run — that ability is
     // parsed by its dedicated block above, and it must not be mistaken for the
     // cost of the "<cost>: <effect>" ability that follows on the same line.
@@ -544,11 +632,15 @@ export function autoAbilities(card: Card): {
     // after a plain word — immediately before the capitalised effect. (A cost
     // token is exhaust / energy / rune, never :rb_might:.)
     const COST_TOK = /(?::rb_(?:exhaust|energy_\d+|rune_[a-z]+):)/
+    // The effect half starts with a capital OR a bracketed keyword — Platewyrm
+    // Egg's is "[Add] :rb_energy_1:", and requiring `[A-Z]` dropped the whole
+    // ability because the divider was never found.
+    const EFF_START = /(\s+(?:[A-Z]|\[))/
     const marked = clause
-      .replace(new RegExp(`(${COST_TOK.source}):(\\s+[A-Z])`, 'g'), '$1‖$2')
-      .replace(new RegExp(`(${COST_TOK.source})(\\s+[A-Z])`, 'g'), '$1‖$2')
+      .replace(new RegExp(`(${COST_TOK.source}):${EFF_START.source}`, 'g'), '$1‖$2')
+      .replace(new RegExp(`(${COST_TOK.source})${EFF_START.source}`, 'g'), '$1‖$2')
       // a ":" after a plain word — but never the closing ":" of an :rb_*: token
-      .replace(/(?<!:rb_[a-z0-9_]*)([a-z0-9]):(\s+[A-Z])/g, '$1‖$2')
+      .replace(new RegExp(`(?<!:rb_[a-z0-9_]*)([a-z0-9]):${EFF_START.source}`, 'g'), '$1‖$2')
     const parts = marked.split('‖')
     if (parts.length < 2) continue
     const costFrag = parts.slice(0, -1).join(':').replace(/‖/g, ':')
@@ -559,18 +651,23 @@ export function autoAbilities(card: Card): {
     // Trim crumbs off the label — a leading "This enters exhausted." folded in
     // when there was no space after its period, and any stray reminder text.
     const prettyC = prettyCost(costFrag).replace(/^this enters exhausted\.\s*/i, '').trim()
-    const prettyE = effFrag
-      .replace(/:rb_[a-z0-9_]+:/g, '')
+    // Render the symbols rather than dropping them — "[Add] 1⚡" is readable,
+    // "[Add] ." is not.
+    const prettyEFull = prettyCost(effFrag)
       .replace(/^\s*this enters exhausted\.\s*/i, '')
-      .replace(/\s+/g, ' ')
+      .replace(/\s+([.,])/g, '$1')
       .trim()
-      .slice(0, 40)
+    const prettyE = prettyEFull.length > 60 ? `${prettyEFull.slice(0, 59)}…` : prettyEFull
+    const guards: NonNullable<ActivatedAbility['when']>[] = []
+    if (empGated) guards.push((_s, src) => isEmpowered(src))
+    if (legionGated) guards.push((s, _src, c) => legionActive(s, c))
+    if (levelGated) guards.push((s, _src, c) => levelActive(s, c, levelGated))
     activated.push({
       label: `${prettyC}: ${prettyE}`,
       cost: parseCost(costFrag),
       targets: compileTargets(effFrag),
       effect: eff,
-      ...(empGated ? { when: (_s, src) => isEmpowered(src) } : {}),
+      ...(guards.length ? { when: (s, src, c) => guards.every((g) => g(s, src, c)) } : {}),
     })
   }
 
@@ -636,6 +733,47 @@ function textTriggers(card: Card): TriggeredAbility[] {
     if (nextTrig >= 0) rest = rest.slice(0, nextTrig + 1)
     let eff = compileEffect(rest)
     if (!eff) continue
+
+    // `[Legion][>] <trigger>` / `[Level N][>] <trigger>` — the ability only
+    // exists while the keyword condition holds. The marker sits immediately
+    // before the trigger phrase we matched.
+    const preTrig = dec.slice(Math.max(0, m.index! - 48), m.index!)
+    if (/\[legion\]\s*(?:\[>\])?\s*$/i.test(preTrig)) {
+      const inner = eff
+      eff = (ctx) => (legionActive(ctx.state, ctx.controller) ? inner(ctx) : ctx.state)
+    }
+    const lvlTrig = preTrig.match(/\[level\s+(\d+)\]\s*(?:\[>\])?\s*$/i)
+    if (lvlTrig) {
+      const need = parseInt(lvlTrig[1], 10)
+      const inner = eff
+      eff = (ctx) => (levelActive(ctx.state, ctx.controller, need) ? inner(ctx) : ctx.state)
+    }
+
+    // "…, you may pay :rb_energy_1: to <effect>" (Sinister Poro). The cost is
+    // real and the choice is the player's, so prompt rather than firing free.
+    const payGate = decode(rest).match(
+      /you may pay\s+((?::rb_energy_\d+:|:rb_rune_[a-z]+:)+)[,.]?\s*(?:to|and)\s+([^.]+)/i,
+    )
+    if (payGate) {
+      const cost = parseCost(payGate[1])
+      const paid: Cost = {
+        energy: cost.energy ?? 0,
+        power: 0,
+        runes: cost.runes ?? [],
+      }
+      const inner = compileEffect(payGate[2])
+      if (inner) {
+        const prompt = `${card.name}: pay ${prettyCost(payGate[1])} to ${payGate[2]
+          .replace(/:rb_[a-z0-9_]+:/g, '')
+          .replace(/\s+/g, ' ')
+          .trim()}?`
+        eff = (ctx) =>
+          optionalPayChoice(ctx.state, ctx.controller, paid, prompt, (s) =>
+            inner({ ...ctx, state: s }),
+          )
+      }
+    }
+
     const paidGated = /if you paid the additional cost/i.test(rest)
     if (paidGated) {
       const inner = eff
@@ -687,6 +825,15 @@ export function compileScript(card: Card): CardScript {
     const onPlay = decode(card.text).match(/when you play (?:me|this),?\s*([^.]*(?:\.[^.]*)*)/i)
     const eff = onPlay ? compileEffect(onPlay[1]) : null
     if (eff) script.play = { targets: compileTargets(onPlay![1]), effect: eff }
+    // [Quick-Draw] — on play, attach this gear to a unit you control. The actual
+    // attach happens in `resolveTop` once the gear is in play; here we just make
+    // the cast ask for the friendly-unit target.
+    if (/\[quick-draw\]/i.test(card.text)) {
+      script.play = {
+        targets: [{ kind: 'friendlyUnit' }],
+        effect: script.play?.effect ?? ((ctx) => ctx.state),
+      }
+    }
     const auto = autoAbilities(card)
     if (auto.activated.length) script.activated = auto.activated
     if (auto.triggers.length) script.triggers = auto.triggers

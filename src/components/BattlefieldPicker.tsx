@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react'
 import clsx from 'clsx'
 import { Card, Deck } from '../types/card'
 import { CardArt } from './CardArt'
-import GlossaryText from './GlossaryText'
+import { CardRulesText } from './GlossaryText'
+import { useT } from '../i18n'
 
 interface Props {
   deck: Deck
@@ -17,13 +18,14 @@ export default function BattlefieldPicker({ deck, allCards, onConfirm, onBack }:
     return deck.battlefieldIds.map((id) => byId.get(id)).filter((c): c is Card => !!c)
   }, [deck, allCards])
 
+  const t = useT()
   const [picked, setPicked] = useState<string>(battlefields[0]?.id ?? '')
 
   return (
     <div className="min-h-screen bg-bg text-txt flex flex-col items-center justify-center p-6">
-      <h2 className="text-lg font-bold uppercase tracking-[0.15em] mb-1">Choose your Battlefield</h2>
+      <h2 className="display-face text-3xl text-accent mb-1">{t('bf.title')}</h2>
       <p className="hud-label normal-case tracking-normal mb-8">
-        You present one of your three. The AI presents one of its own — two battlefields in play.
+        {t('bf.subtitle')}
       </p>
 
       <div className="flex flex-wrap gap-4 justify-center max-w-5xl mb-10">
@@ -39,29 +41,29 @@ export default function BattlefieldPicker({ deck, allCards, onConfirm, onBack }:
             <div className="w-full mb-2 overflow-hidden border border-line">
               <CardArt card={bf} preview={false} badge={false} />
             </div>
-            <div className="font-bold text-xs uppercase tracking-wide">{bf.name}</div>
-            <p className="text-[11px] text-txtDim mt-1 leading-snug">
-              {bf.text ? <GlossaryText text={bf.text} /> : 'No special effect.'}
+            <div className="display-face text-sm text-txt">{bf.name}</div>
+            <p className="text-tiny text-txtDim mt-1 leading-snug">
+              {bf.text ? <CardRulesText text={bf.text} /> : t('bf.noEffect')}
             </p>
           </button>
         ))}
         {battlefields.length === 0 && (
-          <p className="text-txtDim text-sm">This deck has no battlefields — a default will be used.</p>
+          <p className="text-txtDim text-sm">{t('bf.noneInDeck')}</p>
         )}
       </div>
 
       <div className="flex gap-3">
         <button
           onClick={onBack}
-          className="px-4 py-1.5 border border-line text-txt text-[11px] font-bold uppercase tracking-[0.1em] hover:border-accent hover:text-accent"
+          className="px-4 py-2 border border-transparent text-txtDim display-face text-sm transition-all duration-200 ease-calm hover:border-line hover:bg-panel hover:text-txt"
         >
-          ← Back
+          {t('common.back')}
         </button>
         <button
           onClick={() => onConfirm(picked)}
-          className="px-5 py-1.5 bg-accent hover:bg-[#ff7038] text-black text-[11px] font-bold uppercase tracking-[0.12em]"
+          className="px-5 py-2 bg-accent hover:bg-accentBright text-black display-face text-sm transition-all duration-200 ease-calm"
         >
-          Start Game ▶
+          {t('common.startGame')}
         </button>
       </div>
     </div>

@@ -55,7 +55,10 @@ export function playerBot(s: GameState, rng: () => number): GameAction {
     const targets = unitsAt(s.battlefields[pd.index], recv).filter((u) =>
       pd.targetIds.includes(u.instanceId),
     )
-    return { type: 'ASSIGN_DAMAGE', assignments: autoAssignmentList(pd.pool, targets, s) }
+    return {
+      type: 'ASSIGN_DAMAGE',
+      assignments: autoAssignmentList(pd.pool, targets, s, pd.stage === 'def' ? 'defender' : 'attacker'),
+    }
   }
   // In a response window (stack / showdown / damage) just pass — the bot never
   // holds reactions.

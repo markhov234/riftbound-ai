@@ -77,4 +77,29 @@ export interface CardScript {
   empoweredMight?: number
   /** `[Empowered][>] I have [Assault N]` — extra attacker Might while Empowered. */
   empoweredAssault?: number
+  /**
+   * What this gear grants the unit it is attached to, when the card's own text
+   * doesn't spell it out (some riftcodex entries omit the granted box).
+   * Merged with whatever `gearGrants` parses from the text.
+   */
+  gearGrant?: {
+    might?: number
+    keywords?: { name: string; x: number }[]
+    /** Jagged Cutlass: "I can't be moved by enemy spells and abilities." */
+    noEnemyMove?: boolean
+  }
+  /**
+   * A death *replacement* on a gear: when the unit it is attached to would die,
+   * this runs instead. Return the new state to replace the death, or `null` to
+   * let it happen normally.
+   *
+   * Because the death is replaced rather than resolved, the unit never hits the
+   * trash and `UNIT_DIED` is never emitted — so Deathknell correctly does not
+   * trigger (glossary: "If the death is replaced … the trigger is removed").
+   */
+  replaceDeath?: (
+    state: GameState,
+    unit: UnitInPlay,
+    gear: GearInPlay,
+  ) => GameState | null
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import clsx from 'clsx'
 import { PlayerSide } from '../types/game'
 import { Btn } from './ui'
+import { useT } from '../i18n'
 
 const PIPS = ['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅']
 
@@ -16,6 +17,7 @@ export default function DiceRoll({
   onDecide: (firstPlayer: PlayerSide) => void
   onBack: () => void
 }) {
+  const t = useT()
   const [player, setPlayer] = useState(0)
   const [ai, setAi] = useState(0)
   const [rolling, setRolling] = useState(true)
@@ -46,13 +48,13 @@ export default function DiceRoll({
 
   return (
     <div className="min-h-screen bg-bg text-txt flex flex-col items-center justify-center p-6">
-      <h2 className="text-lg font-bold uppercase tracking-[0.15em] mb-1">Roll for it</h2>
+      <h2 className="display-face text-3xl text-accent mb-1">{t('dice.title')}</h2>
       <p className="hud-label normal-case tracking-normal mb-8">
-        Higher roll decides who takes the first turn.
+        {t('dice.subtitle')}
       </p>
 
       <div className="flex items-center gap-12 mb-8">
-        {(['You', 'AI'] as const).map((who, i) => {
+        {(['common.you', 'common.ai'] as const).map((who, i) => {
           const v = i === 0 ? player : ai
           const won = !rolling && (i === 0 ? playerWon : !playerWon)
           return (
@@ -60,7 +62,7 @@ export default function DiceRoll({
               <span
                 className={clsx('hud-label', i === 0 ? 'text-accent' : 'text-txtDim')}
               >
-                {who}
+                {t(who)}
               </span>
               <div
                 className={clsx(
@@ -76,30 +78,30 @@ export default function DiceRoll({
       </div>
 
       {rolling ? (
-        <p className="hud-label h-24">Rolling…</p>
+        <p className="hud-label h-24">{t('dice.rolling')}</p>
       ) : playerWon ? (
         <div className="flex flex-col items-center gap-3 h-24">
-          <p className="text-accent text-xs uppercase tracking-[0.12em]">You won — your choice</p>
+          <p className="text-accent text-sm">{t('dice.youWon')}</p>
           <div className="flex gap-3">
             <Btn variant="primary" onClick={() => onDecide('player')}>
-              Play first
+              {t('dice.playFirst')}
             </Btn>
-            <Btn onClick={() => onDecide('ai')}>Play second</Btn>
+            <Btn onClick={() => onDecide('ai')}>{t('dice.playSecond')}</Btn>
           </div>
         </div>
       ) : (
         <div className="flex flex-col items-center gap-3 h-24">
-          <p className="text-txtDim text-xs uppercase tracking-[0.12em]">
-            AI won the roll and plays first
+          <p className="text-txtDim text-sm">
+            {t('dice.aiWon')}
           </p>
           <Btn variant="primary" onClick={() => onDecide('ai')}>
-            Start Game →
+            {t('dice.start')}
           </Btn>
         </div>
       )}
 
       <button onClick={onBack} className="mt-6 hud-label hover:text-accent">
-        ← Back
+        {t('common.back')}
       </button>
     </div>
   )

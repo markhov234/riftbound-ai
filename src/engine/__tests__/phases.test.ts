@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_HAND_SIZE, RUNES_PER_TURN } from '../../types/game'
+import { RUNES_PER_TURN } from '../../types/game'
 import { dispatch } from '../actions'
 import { beginTurn, endTurn } from '../phases'
 import { scoreHolds } from '../scoring'
@@ -105,39 +105,25 @@ describe('deck-out', () => {
   })
 })
 
-describe('end-of-turn hand limit', () => {
-  const flood = (side: 'player' | 'ai', size = 9) =>
+describe('no maximum hand size (RiftJudge ruling)', () => {
+  const flood = (side: 'player' | 'ai', size = 12) =>
     withHand(
       { ...startedGame({ firstPlayer: side }), turn: 2 },
       side,
       Array.from({ length: size }, (_, i) => makeCard({ name: `Filler ${i}`, type: 'unit', energy: 1 })),
     )
 
-  it('the AI auto-discards down to the maximum', () => {
-    const s = endTurn(flood('ai'))
-    expect(s.ai.hand.length).toBe(MAX_HAND_SIZE)
-    expect(s.ai.trash.length).toBe(2)
-    expect(s.activePlayer).toBe('player') // turn advanced
+  it('ending the turn never forces a discard, however big the hand', () => {
+    const s = endTurn(flood('ai', 12))
+    expect(s.ai.hand.length).toBe(12) // kept them all
+    expect(s.ai.trash.length).toBe(0)
+    expect(s.activePlayer).toBe('player') // turn still advanced
   })
 
-  it('a human over the cap pauses on an interactive discard, then the turn ends', () => {
-    let s = endTurn(flood('player'))
-    // paused: not yet the AI's turn, a mandatory hand-card pick is queued
-    expect(s.activePlayer).toBe('player')
-    const ch = s.pendingChoices[0]
-    expect(ch?.kind).toBe('handCard')
-    expect(ch?.min).toBe(2)
-
-    const drop = s.player.hand.slice(0, 2).map((c) => c.id)
-    s = dispatch(s, { type: 'RESOLVE_CHOICE', pickedIds: drop }, 'player')
-    expect(s.player.hand.length).toBe(MAX_HAND_SIZE)
-    expect(s.player.trash.length).toBe(2)
-    expect(s.activePlayer).toBe('ai') // turn advanced after the pick
-  })
-
-  it('no discard when at or under the cap', () => {
-    const s = endTurn({ ...startedGame({ firstPlayer: 'ai' }), turn: 2 })
+  it('a human with a huge hand ends the turn without a pending pick', () => {
+    const s = endTurn(flood('player', 15))
     expect(s.pendingChoices).toHaveLength(0)
-    expect(s.activePlayer).toBe('player')
+    expect(s.player.hand.length).toBe(15)
+    expect(s.activePlayer).toBe('ai')
   })
 })

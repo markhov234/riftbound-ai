@@ -99,6 +99,8 @@ function buildPlayer(
     points: 0,
     legend,
     chosenChampion,
+    // The Chosen Champion starts in its own zone, playable any time on your turn.
+    championZone: chosenChampion,
     identity: identityOf(legend),
     hand,
     mainDeck: rest,
@@ -196,6 +198,7 @@ export function initGame(
     pendingChoices: [],
     flowGranted: [],
     lastResolved: null,
+    lastShowdown: null,
     log: [`Game start. ${first === 'player' ? 'You' : 'AI'} will take the first turn.`],
     winner: null,
     difficulty,

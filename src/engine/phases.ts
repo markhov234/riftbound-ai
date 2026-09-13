@@ -1,7 +1,8 @@
-import { GameState, MAX_HAND_SIZE, PlayerSide, RUNES_PER_TURN } from '../types/game'
-import { discardChoice, killUnit } from './abilities/effects'
+import { GameState, PlayerSide, RUNES_PER_TURN } from '../types/game'
+import { killUnit } from './abilities/effects'
 import { forceContestedShowdowns } from './combat'
 import { emit } from './events'
+import { clearOrphanedFacedown } from './hidden'
 import { hasTemporary } from './keywords'
 import { refreshRunes } from './runes'
 import { controlledCount, scoreHolds } from './scoring'
@@ -60,12 +61,17 @@ export function beginTurn(state: GameState): GameState {
   })
   // 1a. Ready this player's gear and legend.
   next = mapAllGear(next, (g) => (g.owner === side ? { ...g, exhausted: false } : g))
-  next = updatePlayer(next, side, (ps) => ({ ...ps, legendExhausted: false }))
+  next = updatePlayer(next, side, (ps) => ({ ...ps, legendExhausted: false, freeGearThisTurn: false, forgeDiscountUsed: false, nextCardDiscount: undefined }))
   // 1b. "When I become ready" triggers (Jayce, Hammer in Hand).
   for (const id of readiedIds) {
     next = emit(next, { type: 'UNIT_READIED', instanceId: id, controller: side })
     if (next.winner) return next
   }
+
+  // 1c. Start-of-Beginning-Phase battlefield abilities, which the rules place
+  //     explicitly *before* scoring ("This happens before scoring.").
+  next = emit(next, { type: 'TURN_BEGAN', side, turn: next.turn })
+  if (next.winner) return next
 
   // 1d. Temporary — kill this player's Temporary units before scoring.
   for (const u of ownUnits(next, side).filter(hasTemporary)) {
@@ -130,19 +136,15 @@ export function endTurn(state: GameState): GameState {
   const s = forceContestedShowdowns(state, ending)
   if (s.winner) return s
 
-  // Discard down to the hand-size maximum, then finish the turn. A human over
-  // the cap gets an interactive pick (the game pauses on a pendingChoice);
-  // the AI auto-discards.
-  const over = s[ending].hand.length - MAX_HAND_SIZE
-  if (over > 0) {
-    return discardChoice(s, ending, over, (s2) => finishEndTurn(s2, ending))
-  }
+  // Riftbound has NO maximum hand size (RiftJudge ruling) — no end-of-turn discard.
   return finishEndTurn(s, ending)
 }
 
-/** The tail of `endTurn` after showdowns and the hand-size discard. */
+/** The tail of `endTurn` after showdowns. */
 function finishEndTurn(state: GameState, ending: PlayerSide): GameState {
-  let s = endOfTurnCleanup(state, ending)
+  // 107.3.d — a hidden card whose owner lost the battlefield goes away at the
+  // next cleanup.
+  let s = clearOrphanedFacedown(endOfTurnCleanup(state, ending))
   s = emit(s, { type: 'TURN_ENDED', side: ending })
   if (s.winner) return s
 

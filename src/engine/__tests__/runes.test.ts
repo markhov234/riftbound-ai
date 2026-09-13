@@ -12,11 +12,42 @@ describe('runes', () => {
     expect(next.player.runes.channeled).toHaveLength(before.channeled.length + 1)
   })
 
-  it('recycleRune adds power for the turn', () => {
+  // 163.2 gives a Basic Rune **two** abilities, not a choice between them:
+  // "[E]: Add 1 Energy" and "Recycle this: Add 1 Power". Nothing requires the
+  // rune to be ready to recycle it, so the Energy it already produced keeps
+  // floating in the Rune Pool (165) and you gain the Power on top. This test
+  // previously asserted `energy - 1`, modelling the two as mutually exclusive.
+  it('recycleRune adds Power and leaves floating Energy alone', () => {
     const state = startedGame()
+    const before = state.player.runes
     const next = recycleRune(state, 'player')
     expect(next.player.runes.power).toBe(1)
+    expect(next.player.runes.energy, 'floating Energy survives the recycle').toBe(before.energy)
+    expect(next.player.runes.channeled).toHaveLength(before.channeled.length - 1)
     expect(next.player.runes.recycled).toHaveLength(1)
+    expect(next.player.runes.deck).toHaveLength(before.deck.length) // not from the deck
+  })
+
+  it('recycles the rune you name', () => {
+    const state = startedGame()
+    const target = state.player.runes.channeled[1]
+    const next = recycleRune(state, 'player', target.id)
+    expect(next.player.runes.recycled[0].id).toBe(target.id)
+    expect(next.player.runes.channeled.some((r) => r.id === target.id)).toBe(false)
+  })
+
+  it('refuses when every rune is already consumed by a pip', () => {
+    const state = startedGame()
+    const spent = {
+      ...state,
+      player: {
+        ...state.player,
+        runes: { ...state.player.runes, spent: [...state.player.runes.channeled] },
+      },
+    }
+    const next = recycleRune(spent, 'player')
+    expect(next.player.runes.power).toBe(0)
+    expect(next.log.some((l) => /no rune to recycle/.test(l))).toBe(true)
   })
 
   it('canAfford / payCost — a channeled rune pays an energy OR a power pip', () => {
@@ -33,8 +64,14 @@ describe('runes', () => {
     expect(spilled.player.runes.energy).toBe(0) // 1 energy + 1 pip from energy
     expect(spilled.player.runes.power).toBe(0)
 
-    const withPower = payCost(recycleRune(state, 'player'), 'player', { energy: 1, power: 1 })
-    expect(withPower.player.runes.energy).toBe(1) // 2 energy − 1 energy cost; pip took the recycled power
+    // Recycling keeps the Energy already floating and adds Power on top, so
+    // 2 energy becomes 2 energy + 1 power. The price is the rune leaving the
+    // board — it stops producing from the next Awaken until it is re-channeled.
+    const recycled = recycleRune(state, 'player')
+    expect(recycled.player.runes).toMatchObject({ energy: 2, power: 1 })
+    expect(recycled.player.runes.channeled).toHaveLength(1)
+    const withPower = payCost(recycled, 'player', { energy: 1, power: 1 })
+    expect(withPower.player.runes.energy).toBe(1)
     expect(withPower.player.runes.power).toBe(0)
   })
 

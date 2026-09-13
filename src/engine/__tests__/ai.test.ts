@@ -36,6 +36,28 @@ describe('AI', () => {
     })
   }
 
+  it('actually develops a board over a few turns (medium & hard)', () => {
+    for (const difficulty of ['medium', 'hard'] as AIDifficulty[]) {
+      let s = startedGame({ firstPlayer: 'ai', difficulty })
+      let guard = 0
+      while (!s.winner && s.turn < 6 && guard++ < 60) {
+        if (s.priority === 'ai' || s.pendingChoices[0]?.controller === 'ai') {
+          s = runAITurn(s)
+        } else if (s.stack.length > 0 || s.pendingShowdown) {
+          s = dispatch(s, { type: 'PASS_PRIORITY' }, 'player')
+        } else {
+          s = dispatch(s, { type: 'END_TURN' }, 'player')
+        }
+      }
+      const aiUnits =
+        s.ai.base.length +
+        s.battlefields.reduce((n, bf) => n + bf.units.filter((u) => u.owner === 'ai').length, 0)
+      // The old greedy eval made every unit play a net score loss, so the AI
+      // would pass every turn. It should now put real bodies on the table.
+      expect(aiUnits, `${difficulty} AI board`).toBeGreaterThanOrEqual(2)
+    }
+  })
+
   it('resolves its mulligan automatically', () => {
     let state = initGame(makeDeck('A'), makeDeck('B'), POOL, {
       firstPlayer: 'player',

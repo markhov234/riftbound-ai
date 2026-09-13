@@ -1,4 +1,9 @@
 import { Card } from '../../types/card'
+// Cyclic import, used only inside a function body (resolved by call time).
+import { combatRoleOf, lethalMight } from '../keywords'
+// Cyclic import, used only inside a function body (resolved by call time).
+import { scriptFor } from './scripts'
+import { canAfford, Cost, payCost } from '../runes'
 import {
   EngineEvent,
   GameState,
@@ -43,6 +48,12 @@ export interface EffectCtx {
   picks?: string[]
   /** The caster paid this spell's optional "additional cost" (Ruthless Strike). */
   paidAdditional?: boolean
+  /** The event that fired this trigger, for abilities that need its subject. */
+  event?: EngineEvent
+  /** True when this permanent/spell was played from its Facedown Zone (811). */
+  fromFacedown?: boolean
+  /** For a battlefield's own trigger: which battlefield "here" refers to. */
+  battlefieldIndex?: number
   emit: Emit
 }
 
@@ -131,6 +142,265 @@ export function digTopN(
       mainDeck: [...rest, ...recycled],
     }
   })
+}
+
+/**
+ * Interactive dig (Stacked Deck): the human sees the top `n` face-up and picks
+ * `keep` to put into hand; the rest recycle to the bottom. The AI auto-keeps the
+ * highest-energy card(s).
+ */
+export function digChoice(
+  state: GameState,
+  side: PlayerSide,
+  n: number,
+  keep = 1,
+): GameState {
+  const top = getPlayer(state, side).mainDeck.slice(0, n)
+  if (top.length === 0) return appendLog(state, `${side} has no cards to look at.`)
+  if (side === 'ai' || top.length <= keep) return digTopN(state, side, n, keep)
+
+  const apply = (s: GameState, kept: string[]): GameState =>
+    updatePlayer(s, side, (ps) => {
+      const seen = ps.mainDeck.slice(0, n)
+      const rest = ps.mainDeck.slice(n)
+      const chosen = seen.filter((c) => kept.includes(c.id)).slice(0, keep)
+      const chosenIds = new Set(chosen.map((c) => c.id))
+      // Fallback: if the player somehow picked nothing, keep the first.
+      const finalKeep = chosen.length ? chosen : seen.slice(0, keep)
+      const finalIds = chosen.length ? chosenIds : new Set(finalKeep.map((c) => c.id))
+      const recycled = seen.filter((c) => !finalIds.has(c.id))
+      return {
+        ...ps,
+        hand: [...ps.hand, ...finalKeep],
+        mainDeck: [...rest, ...recycled],
+      }
+    })
+
+  const choice: PendingChoice = {
+    id: newChoiceId(),
+    controller: side,
+    label: `Look at the top ${n} — put ${keep} into your hand (the rest recycle)`,
+    kind: 'deckTop',
+    min: keep,
+    max: keep,
+    legalIds: top.map((c) => c.id),
+    resolve: (picked) => (s) => appendLog(apply(s, picked), `${side} takes a card to hand (Stacked Deck).`),
+  }
+  return { ...state, pendingChoices: [...state.pendingChoices, choice] }
+}
+
+/**
+ * Interactive move (Twilight Step, Fight or Flight, …). A spell-move can send the
+ * unit to any base or battlefield — the human picks; the AI sends its own unit
+ * to a battlefield (aggressive) or an enemy unit home (retreat).
+ */
+export function moveChoice(
+  state: GameState,
+  side: PlayerSide,
+  unitId: string,
+  emit?: Emit,
+  then: (s: GameState) => GameState = (s) => s,
+): GameState {
+  const unit = findUnit(state, unitId)
+  if (!unit) return then(state)
+
+  const dests: { token: string; label: string; to: UnitLocation }[] = [
+    {
+      token: 'base',
+      label: `To ${unit.owner === side ? 'your' : "the enemy's"} base`,
+      to: { kind: 'base' },
+    },
+  ]
+  state.battlefields.forEach((bf, i) => {
+    if (unit.location.kind === 'battlefield' && unit.location.index === i) return
+    dests.push({ token: `bf:${i}`, label: `To ${bf.name}`, to: { kind: 'battlefield', index: i } })
+  })
+
+  const apply = (token: string) => (s: GameState): GameState => {
+    const d = dests.find((x) => x.token === token) ?? dests[0]
+    return then(moveUnitEffect(s, unitId, d.to, { by: side }, emit))
+  }
+
+  if (side === 'ai' || dests.length === 1) {
+    const pick =
+      unit.owner === side
+        ? dests.find((d) => d.token.startsWith('bf:')) ?? dests[0]
+        : dests[0] // send an enemy unit home
+    return apply(pick.token)(state)
+  }
+
+  const choice: PendingChoice = {
+    id: newChoiceId(),
+    controller: side,
+    kind: 'location',
+    label: `Move ${unit.card.name} — choose a destination`,
+    min: 1,
+    max: 1,
+    legalIds: dests.map((d) => d.token),
+    optionLabels: dests.map((d) => d.label),
+    resolve: (picked) => (s) => apply(picked[0] ?? 'base')(s),
+  }
+  return { ...state, pendingChoices: [...state.pendingChoices, choice] }
+}
+
+/** "⚡2, ✦1" — a cost written out for a prompt. */
+export function describeCost(cost: Cost): string {
+  const bits: string[] = []
+  if (cost.energy > 0) bits.push(`⚡${cost.energy}`)
+  const pips = cost.runes?.length ?? 0
+  if (pips > 0) bits.push(`${pips} rune${pips > 1 ? 's' : ''}`)
+  if (cost.power > 0) bits.push(`✦${cost.power}`)
+  return bits.join(' + ') || 'nothing'
+}
+
+/**
+ * "You may pay <cost> to <effect>" on a trigger. The human gets a skippable
+ * yes/no prompt (the whole point — the ability is optional and costs resources);
+ * the AI pays whenever it can afford to. Unaffordable → the ability just passes.
+ */
+export function optionalPayChoice(
+  state: GameState,
+  side: PlayerSide,
+  cost: Cost,
+  label: string,
+  then: (s: GameState) => GameState,
+): GameState {
+  if (!canAfford(state, side, cost)) {
+    return appendLog(state, `${side} can't pay ${describeCost(cost)} — skipped.`)
+  }
+  if (side === 'ai') return then(payCost(state, side, cost))
+
+  const choice: PendingChoice = {
+    id: newChoiceId(),
+    controller: side,
+    kind: 'confirm',
+    label,
+    min: 0, // "you may" — skippable
+    max: 1,
+    legalIds: ['pay'],
+    optionLabels: [`Pay ${describeCost(cost)}`],
+    resolve: (picked) => (s) =>
+      picked.length ? then(payCost(s, side, cost)) : appendLog(s, `${side} declines.`),
+  }
+  return { ...state, pendingChoices: [...state.pendingChoices, choice] }
+}
+
+/**
+ * A bare "you may …" — a yes/no with no cost attached. The AI always says yes,
+ * which is right for every card that currently uses this (each is pure upside).
+ */
+export function confirmChoice(
+  state: GameState,
+  side: PlayerSide,
+  label: string,
+  then: (s: GameState) => GameState,
+): GameState {
+  if (side === 'ai') return then(state)
+  const choice: PendingChoice = {
+    id: newChoiceId(),
+    controller: side,
+    kind: 'confirm',
+    label,
+    min: 0, // "you may" — skippable
+    max: 1,
+    legalIds: ['yes'],
+    optionLabels: ['Yes'],
+    resolve: (picked) => (s) => (picked.length ? then(s) : appendLog(s, `${side} declines.`)),
+  }
+  return { ...state, pendingChoices: [...state.pendingChoices, choice] }
+}
+
+/**
+ * "Choose a unit" from an explicit id list.
+ *
+ * Battlefield triggers get their `targets` auto-picked by the event system, so
+ * a card that genuinely asks the player to choose has to raise its own prompt.
+ */
+export function pickUnitChoice(
+  state: GameState,
+  side: PlayerSide,
+  legalIds: string[],
+  label: string,
+  then: (s: GameState, instanceId: string) => GameState,
+): GameState {
+  if (legalIds.length === 0) return state
+  // One option is not a decision, and the AI never gets a prompt.
+  if (legalIds.length === 1 || side === 'ai') return then(state, legalIds[0])
+
+  const choice: PendingChoice = {
+    id: newChoiceId(),
+    controller: side,
+    kind: 'unit',
+    label,
+    min: 1,
+    max: 1,
+    legalIds,
+    resolve: (picked) => (s) => (picked[0] ? then(s, picked[0]) : s),
+  }
+  return { ...state, pendingChoices: [...state.pendingChoices, choice] }
+}
+
+/** Swap two units' Might for the turn (Switcheroo) via `mightTurn` deltas. */
+export function swapMight(state: GameState, aId: string, bId: string): GameState {
+  const a = findUnit(state, aId)
+  const b = findUnit(state, bId)
+  if (!a || !b || a.instanceId === b.instanceId) return state
+  const mightOf = (u: UnitInPlay) => u.card.might + (u.counters.mightPerm ?? 0) + (u.counters.mightTurn ?? 0)
+  const ma = mightOf(a)
+  const mb = mightOf(b)
+  const next = mapAllUnits(state, (u) => {
+    if (u.instanceId === aId) {
+      return { ...u, counters: { ...u.counters, mightTurn: (u.counters.mightTurn ?? 0) + (mb - ma) } }
+    }
+    if (u.instanceId === bId) {
+      return { ...u, counters: { ...u.counters, mightTurn: (u.counters.mightTurn ?? 0) + (ma - mb) } }
+    }
+    return u
+  })
+  return appendLog(next, `${a.card.name} and ${b.card.name} swap Might this turn (${ma} ↔ ${mb}).`)
+}
+
+/** Swap two units' locations (Tideturner). Not a Move — no move triggers. */
+export function swapLocations(state: GameState, aId: string, bId: string): GameState {
+  const a = findUnit(state, aId)
+  const b = findUnit(state, bId)
+  if (!a || !b || a.instanceId === b.instanceId) return state
+  const locA = a.location
+  const locB = b.location
+  let next = removeUnit(state, aId)
+  next = removeUnit(next, bId)
+  next = placeUnitInto(next, { ...a, location: locB })
+  next = placeUnitInto(next, { ...b, location: locA })
+  return appendLog(next, `${a.card.name} and ${b.card.name} swap places.`)
+}
+
+/** Put an already-detached unit object back at its `location`. */
+function placeUnitInto(state: GameState, unit: UnitInPlay): GameState {
+  if (unit.location.kind === 'base') {
+    return updatePlayer(state, unit.owner, (ps) => ({ ...ps, base: [...ps.base, unit] }))
+  }
+  return updateBattlefield(state, unit.location.index, (bf) => ({ ...bf, units: [...bf.units, unit] }))
+}
+
+/** Banish a permanent from the board — removed from the game, not trashed. */
+export function banishPermanent(state: GameState, instanceId: string, emit?: Emit): GameState {
+  const unit = findUnit(state, instanceId)
+  if (unit) {
+    let next = detachGearFromUnit(state, instanceId)
+    next = removeUnit(next, instanceId)
+    if (!isToken(unit)) {
+      next = updatePlayer(next, unit.owner, (ps) => ({ ...ps, banished: [...ps.banished, unit.card] }))
+    }
+    next = appendLog(next, `${unit.card.name} is banished.`)
+    return emit ? emit(next, { type: 'CARD_BANISHED', card: unit.card, owner: unit.owner }) : next
+  }
+  const g = findGear(state, instanceId)
+  if (!g) return state
+  let next = detachGear(state, instanceId)
+  next = removeGear(next, instanceId)
+  next = updatePlayer(next, g.owner, (ps) => ({ ...ps, banished: [...ps.banished, g.card] }))
+  next = appendLog(next, `${g.card.name} is banished.`)
+  return emit ? emit(next, { type: 'CARD_BANISHED', card: g.card, owner: g.owner }) : next
 }
 
 /** Burn X — mill the top `n` of a player's Main Deck to their trash. */
@@ -439,7 +709,20 @@ export function bounceUnit(state: GameState, instanceId: string): GameState {
 }
 
 /** Recall a unit to its owner's base; a zone change wipes damage + transient state. */
-export function recall(state: GameState, instanceId: string): GameState {
+/**
+ * Send a unit to its owner's base without it being a Move (449–451).
+ *
+ * Rule 453.1: "Unless otherwise stated by the source of the Recall, Damage,
+ * Exhausted Status, Buffed Status, and applied Layer alterations will all
+ * remain unaffected by a Recall." So a bare recall preserves everything — the
+ * `heal` / `exhaust` options exist for the cards that *do* state it (Guardian
+ * Angel, Zhonya's Hourglass), and nothing else may clear damage or counters.
+ */
+export function recall(
+  state: GameState,
+  instanceId: string,
+  opts: { heal?: boolean; exhaust?: boolean } = {},
+): GameState {
   const unit = findUnit(state, instanceId)
   if (!unit) return state
   if (isToken(unit)) {
@@ -450,10 +733,9 @@ export function recall(state: GameState, instanceId: string): GameState {
   const recalled: UnitInPlay = {
     ...unit,
     location: { kind: 'base' },
-    exhausted: false,
+    exhausted: opts.exhaust ?? unit.exhausted,
     sick: false,
-    damage: 0,
-    counters: {},
+    damage: opts.heal ? 0 : unit.damage,
   }
   next = updatePlayer(next, unit.owner, (ps) => ({ ...ps, base: [...ps.base, recalled] }))
   return appendLog(next, `${unit.card.name} is recalled to ${unit.owner}'s base.`)
@@ -461,9 +743,37 @@ export function recall(state: GameState, instanceId: string): GameState {
 
 // ── damage / death ───────────────────────────────────────────────────────
 
+/**
+ * Attached gear that replaces this unit's death (Guardian Angel). Returns the
+ * replacing state, or `null` if nothing intervenes.
+ */
+/**
+ * Ask every gear its controller has whether it replaces this death.
+ *
+ * Deliberately *not* limited to gear attached to the dying unit: Zhonya's
+ * Hourglass is a standalone gear that saves any friendly unit. Each script
+ * decides for itself whether it applies (Equipment checks `attachedTo`) and
+ * returns null to decline.
+ */
+function deathReplacement(state: GameState, unit: UnitInPlay): GameState | null {
+  for (const g of allGear(state)) {
+    if (g.owner !== unit.owner) continue
+    const replace = scriptFor(g.card)?.replaceDeath
+    if (!replace) continue
+    const out = replace(state, unit, g)
+    if (out) return out
+  }
+  return null
+}
+
 export function killUnit(state: GameState, instanceId: string, emit?: Emit, inCombat = false): GameState {
   const unit = allUnits(state).find((u) => u.instanceId === instanceId)
   if (!unit) return state
+
+  // A replacement means the unit never dies — no trash, no `UNIT_DIED`, so
+  // Deathknell correctly doesn't fire.
+  const replaced = deathReplacement(state, unit)
+  if (replaced) return replaced
 
   let next = detachGearFromUnit(state, instanceId)
   next = removeUnit(next, instanceId)
@@ -495,19 +805,13 @@ export function dealDamage(
   if (!unit) return state
   const total = unit.damage + amount
   const next = appendLog(state, `${unit.card.name} takes ${amount} damage.`)
-  if (effHpAfter(unit, total) <= 0) {
+  // Might is health (143.2.a). Use the unit's *current* Might, which includes
+  // Assault/Shield when a showdown is live — a burn spell cast at an attacker
+  // mid-combat has to get through its Assault Might too.
+  if (lethalMight(unit, state, combatRoleOf(state, unit)) - total <= 0) {
     return killUnit(next, instanceId, emit)
   }
   return mapAllUnits(next, (u) => (u.instanceId === instanceId ? { ...u, damage: total } : u))
-}
-
-function effHpAfter(unit: UnitInPlay, totalDamage: number): number {
-  return (
-    Math.max(
-      1,
-      unit.card.might + (unit.counters.mightTurn ?? 0) + (unit.counters.mightPerm ?? 0),
-    ) - totalDamage
-  )
 }
 
 // ── buffs / debuffs / keywords / readiness ───────────────────────────────
@@ -613,11 +917,16 @@ export function moveUnitEffect(
   state: GameState,
   instanceId: string,
   to: UnitLocation,
-  opts: { ready?: boolean } = {},
+  opts: { ready?: boolean; /** Who is doing the moving, for move-protection. */ by?: PlayerSide } = {},
   emit?: Emit,
 ): GameState {
   const unit = findUnit(state, instanceId)
   if (!unit) return state
+  // Jagged Cutlass — "I can't be moved by enemy spells and abilities."
+  // Only an *enemy* effect is blocked; the owner can still move it freely.
+  if (opts.by && opts.by !== unit.owner && hasMoveProtection(state, unit)) {
+    return appendLog(state, `${unit.card.name} can't be moved by enemy spells and abilities.`)
+  }
   const from = unit.location
   let next = removeUnit(state, instanceId)
   const moved: UnitInPlay = {
@@ -683,9 +992,20 @@ export function gainXP(state: GameState, side: PlayerSide, n: number): GameState
   return appendLog(next, `${side} gains ${n} XP.`)
 }
 
-export function setEmpowered(state: GameState, instanceId: string): GameState {
-  return mapAllUnits(state, (u) =>
-    u.instanceId === instanceId ? { ...u, empowered: true } : u,
+/**
+ * Set (or clear) Empowered on a unit **or a gear**.
+ *
+ * This used to call `mapAllUnits` only, so pointing it at a gear silently did
+ * nothing — and in a gear deck ("If this is [Empowered], … instead") a missed
+ * flag reads as the card just not working. Instance ids are unique across both
+ * collections, so handling each is unambiguous.
+ */
+export function setEmpowered(state: GameState, instanceId: string, on = true): GameState {
+  const withUnits = mapAllUnits(state, (u) =>
+    u.instanceId === instanceId ? { ...u, empowered: on } : u,
+  )
+  return mapAllGear(withUnits, (g) =>
+    g.instanceId === instanceId ? { ...g, empowered: on } : g,
   )
 }
 
@@ -838,7 +1158,23 @@ export function gearGrants(card: Card): { might: number; keywords: { name: strin
   const keywords = [...t.matchAll(/\[(Assault|Shield|Deflect|Ganking|Tank|Tough)\s*(\d+)?\]/gi)].map(
     (m) => ({ name: m[1][0].toUpperCase() + m[1].slice(1).toLowerCase(), x: m[2] ? parseInt(m[2], 10) : 1 }),
   )
-  return { might, keywords }
+  // Some cards' API text omits the granted box entirely (Guardian Angel), so a
+  // script can supply what the text doesn't say.
+  const extra = scriptFor(card)?.gearGrant
+  return {
+    might: might + (extra?.might ?? 0),
+    keywords: [...keywords, ...(extra?.keywords ?? [])],
+  }
+}
+
+/**
+ * Does any gear attached to `unit` stop enemy effects moving it?
+ * Jagged Cutlass: "I can't be moved by enemy spells and abilities."
+ */
+export function hasMoveProtection(state: GameState, unit: UnitInPlay): boolean {
+  return [...state.player.gear, ...state.ai.gear].some(
+    (g) => g.attachedTo === unit.instanceId && scriptFor(g.card)?.gearGrant?.noEnemyMove,
+  )
 }
 
 /** Gear the given side controls. */
@@ -882,7 +1218,17 @@ export function attachGear(state: GameState, gearId: string, unitId?: string): G
     g.instanceId === gearId ? { ...g, attachedTo: unitId } : g,
   )
   next = applyGearGrant(next, unit.instanceId, gear.card, 1)
-  return appendLog(next, `${gear.card.name} equips ${unit.card.name}.`)
+  // Name the grant. "X equips Y" left the player to guess whether anything
+  // happened — the commonest "this buff isn't working" report.
+  const g = gearGrants(gear.card)
+  const parts = [
+    ...(g.might ? [`+${g.might} might`] : []),
+    ...g.keywords.map((k) => (k.x > 1 ? `${k.name} ${k.x}` : k.name)),
+  ]
+  return appendLog(
+    next,
+    `${gear.card.name} equips ${unit.card.name}${parts.length ? ` (${parts.join(', ')})` : ''}.`,
+  )
 }
 
 /** Detach a gear (Equipment) — remove its grant, keep the gear in play unattached. */
@@ -918,6 +1264,148 @@ export function readyGear(state: GameState, side: PlayerSide, n: number): GameSt
     }),
   }))
   return appendLog(next, `${side} readies ${n - left} gear.`)
+}
+
+/** Ready one specific gear — used when the controller picked which. */
+export function readyGearById(state: GameState, gearId: string): GameState {
+  const g = findGear(state, gearId)
+  if (!g) return state
+  if (!g.exhausted) return appendLog(state, `${g.card.name} is already ready.`)
+  const next = mapAllGear(state, (x) => (x.instanceId === gearId ? { ...x, exhausted: false } : x))
+  return appendLog(next, `${g.card.name} is readied.`)
+}
+
+/**
+ * Un-spend one channeled rune, so it can pay another `:rb_rune_*:` pip this
+ * turn. In this engine a pip costs a *free channeled rune* (not extra energy),
+ * so readying a rune simply removes it from `spent`.
+ */
+export function readyRuneAt(state: GameState, side: PlayerSide, index: number): GameState {
+  const ps = getPlayer(state, side)
+  const rune = ps.runes.spent[index]
+  if (!rune) return state
+  const next = updatePlayer(state, side, (p) => ({
+    ...p,
+    runes: { ...p.runes, spent: p.runes.spent.filter((_, i) => i !== index) },
+  }))
+  return appendLog(next, `${side} readies a ${rune.domains[0] ?? 'colorless'} rune.`)
+}
+
+/** One readyable thing, as an opaque token plus a label for the picker. */
+interface Readyable {
+  token: string
+  label: string
+  apply: (s: GameState) => GameState
+}
+
+function readyables(state: GameState, side: PlayerSide): Readyable[] {
+  const ps = getPlayer(state, side)
+  const out: Readyable[] = []
+  for (const u of allUnits(state)) {
+    if (u.owner !== side || !u.exhausted) continue
+    out.push({
+      token: `u:${u.instanceId}`,
+      label: u.card.name,
+      apply: (s) => readyUnit(s, u.instanceId),
+    })
+  }
+  for (const g of ps.gear) {
+    if (!g.exhausted) continue
+    out.push({
+      token: `g:${g.instanceId}`,
+      label: `${g.card.name} (gear)`,
+      apply: (s) => readyGearById(s, g.instanceId),
+    })
+  }
+  ps.runes.spent.forEach((rune, i) => {
+    out.push({
+      token: `r:${i}`,
+      label: `${rune.domains[0] ?? 'colorless'} rune`,
+      // Indices shift as runes leave `spent`, so resolve by identity at apply time.
+      apply: (s) => {
+        const cur = getPlayer(s, side).runes.spent.findIndex((c) => c.id === rune.id)
+        return cur >= 0 ? readyRuneAt(s, side, cur) : s
+      },
+    })
+  })
+  return out
+}
+
+/**
+ * "Ready up to N units, gear, and/or runes." (Acceleration Gate.)
+ *
+ * The three kinds can't be expressed as one `TargetSpec` — those are single-kind
+ * — so this is a `PendingChoice` over a mixed list instead. The AI takes the
+ * first N (units before gear before runes, which is the useful order).
+ */
+export function readyPermanentsChoice(
+  state: GameState,
+  side: PlayerSide,
+  max: number,
+): GameState {
+  const options = readyables(state, side)
+  if (options.length === 0) return appendLog(state, `${side} has nothing to ready.`)
+
+  const applyPicks = (s: GameState, picked: string[]): GameState => {
+    let next = s
+    // Re-derive from the *current* state so a stale token is simply skipped.
+    const live = readyables(next, side)
+    for (const token of picked.slice(0, max)) {
+      const opt = live.find((o) => o.token === token)
+      if (opt) next = opt.apply(next)
+    }
+    return next
+  }
+
+  if (side === 'ai') return applyPicks(state, options.slice(0, max).map((o) => o.token))
+
+  const choice: PendingChoice = {
+    id: newChoiceId(),
+    controller: side,
+    label: `Ready up to ${max} — units, gear and/or runes`,
+    kind: 'permanent',
+    min: 0,
+    max,
+    legalIds: options.map((o) => o.token),
+    optionLabels: options.map((o) => o.label),
+    resolve: (picked) => (s) => applyPicks(s, picked),
+  }
+  return { ...state, pendingChoices: [...state.pendingChoices, choice] }
+}
+
+/**
+ * "You may kill a gear" — an optional pick across every gear on the board.
+ *
+ * Trigger targets are auto-picked by the event system (`autoTargetsForTrigger`)
+ * and `TriggerChoice` has no gear kind, so a card that lets the *player* choose
+ * a gear has to raise its own `permanent` choice like this one.
+ */
+export function killGearChoice(state: GameState, side: PlayerSide, label: string): GameState {
+  const options = allGear(state)
+  if (options.length === 0) return appendLog(state, 'There is no gear to destroy.')
+
+  const apply = (s: GameState, picked: string[]): GameState =>
+    picked[0] ? killGear(s, picked[0]) : s
+
+  if (side === 'ai') {
+    // Prefer an enemy gear; never blow up your own if there is a choice.
+    const enemy = options.filter((g) => g.owner !== side)
+    const pick = (enemy.length > 0 ? enemy : [])[0]
+    return pick ? killGear(state, pick.instanceId) : state
+  }
+
+  const choice: PendingChoice = {
+    id: newChoiceId(),
+    controller: side,
+    label,
+    kind: 'permanent',
+    min: 0, // "you may"
+    max: 1,
+    legalIds: options.map((g) => g.instanceId),
+    optionLabels: options.map((g) => `${g.card.name}${g.owner === side ? ' (yours)' : ' (enemy)'}`),
+    resolve: (picked) => (s) => apply(s, picked),
+  }
+  return { ...state, pendingChoices: [...state.pendingChoices, choice] }
 }
 
 /** Give a gear the Empowered status. */

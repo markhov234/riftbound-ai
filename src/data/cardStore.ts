@@ -7,10 +7,12 @@ import {
   RawCardsResponse,
   Supertype,
 } from '../types/card'
+import { applyErrata } from './errata'
 
 const CACHE_KEY = 'riftbound_cards_v2'
 const CACHE_TTL = 1000 * 60 * 60 * 24 // 24 hours
 const API_BASE = 'https://api.riftcodex.com'
+// The API rejects anything above 100 with a 422, so the page count is fixed.
 const PAGE_SIZE = 100
 
 // ── Normalization helpers ──────────────────────────────────────────────────
@@ -108,24 +110,74 @@ function normalize(raw: RawCard): Card {
 // ── Fetching (paginated) ───────────────────────────────────────────────────
 
 let _cache: Card[] | null = null
+/** The pool exactly as the API shipped it, before errata. See `__rawCards`. */
+let _raw: Card[] | null = null
 let _byName: Map<string, Card> | null = null
+/** De-dupes overlapping loads — StrictMode runs App's effect twice in dev, and
+ *  two passes over 15 pages meant 30 requests racing for the same data. */
+let _inflight: Promise<Card[]> | null = null
+
+/** Page requests allowed in the air at once. */
+const CONCURRENCY = 5
+/** Per-request ceiling. The API answers a page in 10-35s when it is warm, so
+ *  this is a "something is wrong" bound, not a normal-latency one. */
+const REQUEST_TIMEOUT = 45_000
+
+export interface LoadProgress {
+  done: number
+  total: number
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 async function fetchPage(page: number): Promise<RawCardsResponse> {
   const url = `${API_BASE}/cards?size=${PAGE_SIZE}&page=${page}`
   let lastErr: unknown
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await fetch(url)
+      const res = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT) })
       if (!res.ok) throw new Error(`HTTP ${res.status} for page ${page}`)
       return (await res.json()) as RawCardsResponse
     } catch (err) {
       lastErr = err
+      // Back off before retrying: an immediate second attempt just rejoins the
+      // same queue that timed the first one out.
+      if (attempt < 2) await sleep(600 * (attempt + 1))
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
 }
 
-function indexCards(cards: Card[]): void {
+/**
+ * Fetch `pages` with at most CONCURRENCY requests outstanding, preserving order.
+ *
+ * The pool is 15 pages (the API caps `size` at 100 — anything larger is a 422)
+ * and each page takes 10-35s, so the old one-after-another loop spent about
+ * three minutes on a cold load. Long enough that the loading screen read as a
+ * hang, which is exactly what it was reported as.
+ */
+async function fetchPages(pages: number[], onPage: () => void): Promise<RawCard[][]> {
+  const out: RawCard[][] = []
+  let next = 0
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++
+      if (i >= pages.length) return
+      out[i] = (await fetchPage(pages[i])).items
+      onPage()
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pages.length) }, worker))
+  return out
+}
+
+function indexCards(input: Card[]): void {
+  // Both the network path and the test hook come through here, so this is the
+  // one place errata need to be applied.
+  _raw = input
+  const cards = applyErrata(input)
   _cache = cards
   _byName = new Map()
   const add = (key: string, c: Card) => {
@@ -147,35 +199,56 @@ function indexCards(cards: Card[]): void {
   }
 }
 
-export async function fetchAllCards(): Promise<Card[]> {
-  if (_cache) return _cache
-
+/** Whatever is in localStorage, regardless of age. */
+function readStoredCards(): { cards: Card[]; timestamp: number } | null {
   try {
     const stored = localStorage.getItem(CACHE_KEY)
-    if (stored) {
-      const { cards, timestamp } = JSON.parse(stored) as {
-        cards: Card[]
-        timestamp: number
-      }
-      if (Date.now() - timestamp < CACHE_TTL && Array.isArray(cards) && cards.length > 0) {
-        indexCards(cards)
-        return cards
-      }
-    }
+    if (!stored) return null
+    const parsed = JSON.parse(stored) as { cards: Card[]; timestamp: number }
+    if (!Array.isArray(parsed.cards) || parsed.cards.length === 0) return null
+    return parsed
   } catch {
-    // ignore corrupt cache
+    return null // corrupt cache
+  }
+}
+
+export async function fetchAllCards(
+  onProgress?: (p: LoadProgress) => void,
+): Promise<Card[]> {
+  if (_cache) return _cache
+  if (_inflight) return _inflight
+  _inflight = loadCards(onProgress).finally(() => {
+    _inflight = null
+  })
+  return _inflight
+}
+
+async function loadCards(onProgress?: (p: LoadProgress) => void): Promise<Card[]> {
+  const stored = readStoredCards()
+  if (stored && Date.now() - stored.timestamp < CACHE_TTL) {
+    indexCards(stored.cards)
+    return _cache!
   }
 
-  const first = await fetchPage(1)
-  let items: RawCard[] = [...first.items]
-  for (let page = 2; page <= first.pages; page++) {
-    const next = await fetchPage(page)
-    items = items.concat(next.items)
+  try {
+    const first = await fetchPage(1)
+    const total = first.pages
+    let done = 1
+    onProgress?.({ done, total })
+
+    const rest = Array.from({ length: total - 1 }, (_, i) => i + 2)
+    const later = await fetchPages(rest, () => onProgress?.({ done: ++done, total }))
+    indexCards([...first.items, ...later.flat()].map(normalize))
+  } catch (err) {
+    // An expired cache still plays a perfectly good game; only the newest
+    // printings would be missing. Failing outright when we hold a usable pool
+    // is the worse outcome, so keep it and let the user in.
+    if (!stored) throw err
+    indexCards(stored.cards)
+    return _cache!
   }
 
-  const cards = items.map(normalize)
-  indexCards(cards)
-
+  const cards = _cache!
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify({ cards, timestamp: Date.now() }))
   } catch {
@@ -189,8 +262,17 @@ export async function fetchAllCards(): Promise<Card[]> {
 
 /** Test hook — seed the pool + name index directly, bypassing the network. */
 export function __setCardData(cards: Card[]): void {
-  _cache = cards
-  indexCards(cards)
+  indexCards(cards) // sets `_cache` to the errata'd copy
+}
+
+/**
+ * The pool as the API shipped it, *before* errata — for the test-fixture
+ * generator only. Writing the errata'd copy into the fixture would bake the
+ * corrections in, and then the test that checks each erratum still matches the
+ * printed text would be checking our own output instead of the API's.
+ */
+export function __rawCards(): Card[] | null {
+  return _raw
 }
 
 export function getCardById(id: string): Card | undefined {

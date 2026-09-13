@@ -12,35 +12,94 @@ html {
 
 body {
   margin: 0;
-  background-color: #0b0b0c;
-  color: #d4d4d4;
-  font-family: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  /* A lit navy table. Three layers, cheapest last:
+       1. a soft overhead light, so the middle of the board is where the eye goes
+       2. a fine grid, which is what stops a large flat fill reading as "unfinished
+          background" and reads as a playmat instead
+       3. the base colour
+     The grid is deliberately at the edge of visible — you should feel the
+     surface has a texture without ever being able to read the lines. */
+  background-color: #241B2E;
+  background-image:
+    radial-gradient(ellipse 110% 80% at 50% 0%, rgba(255, 200, 245, 0.09) 0%, rgba(0, 0, 0, 0) 62%),
+    radial-gradient(ellipse 140% 100% at 50% 110%, rgba(0, 0, 0, 0.38) 0%, rgba(0, 0, 0, 0) 60%),
+    linear-gradient(rgba(230, 195, 255, 0.030) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(230, 195, 255, 0.030) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    100% 100%,
+    44px 44px,
+    44px 44px;
+  background-attachment: fixed;
+  color: #E6EDF3;
+  font-family:
+    'Inter',
+    'Noto Sans KR',
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    'Malgun Gothic',
+    sans-serif;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* Small caps HUD label used across the terminal UI. */
-.hud-label {
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  font-size: 10px;
-  color: #8a8a8a;
+/* These live in the components layer so Tailwind utilities still win — a
+   `normal-case` or `text-accent` on the same element must be able to override
+   them. (They used to sit after @tailwind utilities, which silently beat every
+   utility of equal specificity: `hud-label normal-case` stayed uppercase.) */
+@layer components {
+  /* Titles and card names — the Beaufort-substitute serif. */
+  .display-face {
+    font-family: 'Marcellus', 'Noto Serif KR', Georgia, 'Times New Roman', serif;
+    letter-spacing: 0.01em;
+  }
+
+  /* Small label above a control or zone.
+     Uppercase at 10px/600 with wide tracking is a lot of shouting for a word
+     like "Gear". Sentence case at 11px/500 with normal tracking says the same
+     thing and stops competing with the content it labels. */
+  .hud-label {
+    letter-spacing: 0.01em;
+    font-size: 11px;
+    font-weight: 500;
+    color: #8B98A5;
+  }
+
+  /* Numbers that need to line up (stats, costs, scores). */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1;
+  }
+}
+
+/* Hangul syllables are already full-width, so wide tracking pulls them apart;
+   10px Hangul is also below comfortable reading size. (uppercase is left in
+   place — a no-op on Hangul, and it still styles embedded Latin.) */
+/* hud-label is already 11px at normal tracking, so Hangul needs no override. */
+:root[lang='ko'] [class*='tracking-'] {
+  letter-spacing: 0.01em;
 }
 
 /* Board sizing scales with the viewport so it fills the screen without dead
    margins on wide displays and stays usable on small ones. */
+/* The board sits directly on the table texture; painting an opaque fill over
+   it would hide the grid the body just drew. */
 .board-root {
-  --card-w: clamp(88px, 8.6vw, 134px); /* a hand card */
+  background-color: transparent;
+  --card-w: clamp(88px, min(9.6vw, 15.5vh), 150px); /* a hand card */
   --unit-w: clamp(52px, 3.8vw, 74px); /* a base / AI-strip unit */
-  --unit-w-big: clamp(58px, 4.5vw, 86px); /* a unit at a battlefield */
+  --unit-w-big: clamp(66px, 5.4vw, 104px); /* a unit at a battlefield */
   --rune-w: clamp(34px, 2.9vw, 50px); /* a channeled rune chip */
   --legend-w: clamp(74px, 6.6vw, 112px); /* legend / champion tile */
+  --face-w: clamp(62px, 5.6vw, 92px); /* legend + champion on the playmat strip */
   --pile-w: clamp(44px, 3.9vw, 62px); /* deck / trash / gear tile */
-  --bf-art-h: clamp(84px, 12vh, 156px); /* battlefield card image */
-  --pip: clamp(12px, 0.95vw, 18px); /* one score pip */
   --side-w: clamp(240px, 19vw, 340px); /* log / preview rail */
 }
 
-/* Soft 3.5px corners across the UI — panels, cards, borders, controls. */
+/* One radius, applied broadly. Just enough to take the bite off a corner —
+   a card game wants crisp edges, not app-store roundness. Being consistent
+   about it is most of what separates a calm layout from a busy one. */
 .bg-panel,
 .bg-panel2,
 button,
@@ -51,11 +110,155 @@ textarea,
 [class*='border-accent'],
 [class*='border-danger'],
 [class*='border-[#'] {
-  border-radius: 3.5px;
+  border-radius: 3px;
 }
 /* Keep deliberately round shapes round (score pips, avatars, dots). */
 [class*='rounded-full'] {
   border-radius: 9999px !important;
+}
+
+/* ── Surfaces ────────────────────────────────────────────────────────────
+   Flat. The gradient-plus-inner-highlight treatment gave every panel a lit
+   bevel, and with dozens of panels on screen that is a lot of edges competing
+   for attention. Depth now comes from the fill stepping away from the board
+   (bg → panel → panel2), which needs no edges at all. */
+@layer components {
+.bg-panel,
+.bg-panel2 {
+  background-image: none;
+}
+
+/* Filled accent surfaces carry dark ink; the colour is doing the work, so it
+   needs no gradient under it. */
+.bg-accent {
+  background-image: none;
+  color: #04222A;
+}
+.bg-accent:hover {
+  background-color: #8AFBFF;
+}
+}
+
+/* ── Motion ──────────────────────────────────────────────────────────────
+   Small, reusable entrance animations. Elements opt in with
+   `animate-[rb-pop_...]` etc. All disabled under prefers-reduced-motion. */
+@keyframes rb-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes rb-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes rb-pop {
+  0% { opacity: 0; transform: scale(0.7); }
+  70% { opacity: 1; transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+@keyframes rb-slide-down {
+  from { opacity: 0; transform: translateY(-14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes rb-slide-left {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes rb-flash {
+  0% { box-shadow: 0 0 0 0 rgba(255, 42, 84, 0.9); }
+  100% { box-shadow: 0 0 0 24px rgba(255, 42, 84, 0); }
+}
+@keyframes rb-bump {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.35); color: #FF2A54; }
+  100% { transform: scale(1); }
+}
+
+/* A card being dealt into the hand: it arrives from the deck side, turning
+   and settling rather than popping into place. Paired with a short-lived class
+   in GameBoard so it plays once per draw. */
+@keyframes rb-draw {
+  0% {
+    opacity: 0;
+    transform: translate(64px, -40px) rotate(12deg) scale(0.86);
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    transform: translate(0, 0) rotate(0deg) scale(1);
+  }
+}
+
+/* A contested battlefield, breathing. Deliberately box-shadow only: the badge
+   pulse (rb-dot) animates transform, and putting that on a panel would scale
+   the whole battlefield in and out. */
+@keyframes rb-contested {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 184, 0, 0.45); }
+  50% { box-shadow: 0 0 16px 2px rgba(255, 184, 0, 0.5); }
+}
+.rb-contested {
+  animation: rb-contested 2.2s ease-in-out infinite;
+}
+
+/* "This changed while you weren't acting." Rings a unit whose stats, position
+   or damage moved during the opponent's turn, so an AI turn is legible after
+   the fact instead of being a wall of log lines. */
+@keyframes rb-changed {
+  0%   { box-shadow: 0 0 0 0 rgba(0, 245, 255, 0.85); }
+  35%  { box-shadow: 0 0 12px 3px rgba(0, 245, 255, 0.7); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 245, 255, 0); }
+}
+.rb-changed {
+  animation: rb-changed 1.6s ease-out 2;
+}
+
+/* "The game is waiting on you." A slow breath rather than a blink — it has to
+   be catchable in peripheral vision while the eye is on the board, without
+   becoming the thing you look at. */
+@keyframes rb-waiting {
+  0%, 100% { box-shadow: inset 0 0 0 2px rgba(255, 184, 0, 0.55); }
+  50% { box-shadow: inset 0 0 22px 3px rgba(255, 184, 0, 0.32), inset 0 0 0 2px rgba(255, 184, 0, 0.95); }
+}
+@keyframes rb-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.7); }
+}
+
+/* The board edge glows while an action is required. `pointer-events: none` so
+   it never eats a click meant for a card underneath. */
+.rb-awaiting::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 30;
+  animation: rb-waiting 1.9s ease-in-out infinite;
+}
+
+/* Smooth the common state-driven changes (borders, opacity, transforms). */
+.board-root button,
+.board-root [class*='border-'] {
+  /* Slower than feels right when you read the number, and exactly right when
+     you use it: 0.22s still reads as a snap. Colour settles a touch faster than
+     movement, which is what keeps a hover from feeling rubbery. */
+  transition:
+    border-color 0.28s cubic-bezier(0.22, 0.61, 0.36, 1),
+    background-color 0.28s cubic-bezier(0.22, 0.61, 0.36, 1),
+    color 0.28s cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity 0.34s cubic-bezier(0.22, 0.61, 0.36, 1),
+    transform 0.34s cubic-bezier(0.22, 0.61, 0.36, 1),
+    box-shadow 0.34s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }
 
 ::-webkit-scrollbar {
@@ -63,11 +266,32 @@ textarea,
   height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: #0b0b0c;
+  background: #241B2E;
 }
 ::-webkit-scrollbar-thumb {
-  background: #3a3a3a;
+  background: #553F6B;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #e8622c;
+  background: #00F5FF;
+}
+
+/* Draggable board pieces. `touch-action: none` has to win regardless of what a
+   call site puts in its own `style`, so it lives here keyed off the attribute
+   `useDragDrop` sets — an inline style from the hook was simply overwritten by
+   the first element that also needed a `style` of its own. */
+[data-draggable='1'] {
+  touch-action: none;
+}
+
+/* Card art is an <img>, and images are natively draggable. Without this, a
+   press-and-drag on a card fires the browser's own "drag this image" gesture,
+   which emits `dragstart` and then `pointercancel` — killing the pointer
+   stream the board's drag-and-drop runs on. Symptom: dragging a card by its
+   artwork does nothing at all. Synthetic pointer events do not reproduce it,
+   so only a real mouse shows the bug. */
+[data-draggable='1'],
+[data-draggable='1'] img {
+  -webkit-user-drag: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
