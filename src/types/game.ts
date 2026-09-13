@@ -215,6 +215,13 @@ export type EngineEvent =
   | { type: 'CONQUERED'; side: PlayerSide; index: number; excess: number }
   | { type: 'HELD'; side: PlayerSide; count: number }
   | { type: 'COMBAT_WON'; side: PlayerSide; index: number; winnerInstanceIds: string[] }
+  /**
+   * Combat opening at a battlefield — Core Rules 459, Step 1 (the Combat
+   * Showdown Step), raised once attacker and defender are established
+   * (459.2.b) and *before* the reaction window (459.2.e–f) or damage (460).
+   * `attacker` is the player whose units applied the Contested status.
+   */
+  | { type: 'COMBAT_STARTED'; index: number; attacker: PlayerSide }
   | { type: 'CARD_DISCARDED'; card: Card; owner: PlayerSide }
   | { type: 'TURN_ENDED'; side: PlayerSide }
   /** Start of `side`'s Beginning Phase, before scoring (Frozen Fortress, Dusk Rose Lab). */

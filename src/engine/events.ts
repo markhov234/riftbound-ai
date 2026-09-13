@@ -249,6 +249,21 @@ export function emit(state: GameState, event: EngineEvent, depth = 0): GameState
     }
   }
 
+  // Combat opening at one battlefield (Threshold of the Gray). Only that
+  // battlefield's clause fires, and only once per combat — the trigger is run
+  // for the attacker, and a clause that pays both players does so itself.
+  if (event.type === 'COMBAT_STARTED') {
+    const card = s.battlefields[event.index]?.card
+    if (card) {
+      for (const trig of battlefieldScript(card).triggers) {
+        if (trig.on !== 'COMBAT_STARTED') continue
+        s = appendLog(s, `${s.battlefields[event.index].name}: combat begins — ability triggers.`)
+        s = runBattlefieldTrigger(s, event.attacker, trig, depth, event, event.index)
+        if (s.winner) return s
+      }
+    }
+  }
+
   // Battlefield-scoped events (conquer / hold / defend "here").
   if (event.type === 'CONQUERED' || event.type === 'HELD' || event.type === 'DEFENDED') {
     const side = event.side

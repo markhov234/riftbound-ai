@@ -2,6 +2,7 @@ import { Card } from '../../types/card'
 import { GameState, UnitInPlay } from '../../types/game'
 import { compileEffect, compileTargets } from './compile'
 import {
+  addEnergy,
   burn,
   confirmChoice,
   dealDamage,
@@ -17,6 +18,7 @@ import {
   revealTopChooseToHand,
 } from './effects'
 import { channelRuneExhausted, recycleRune } from '../runes'
+import { otherSide } from '../state'
 import { hasTemporary, isMighty } from '../keywords'
 import { appendLog, controllerOf, getPlayer, updatePlayer } from '../state'
 import { TargetSpec } from './targets'
@@ -28,12 +30,11 @@ import { TargetSpec } from './targets'
  *
  * Cost auras do NOT live here. Mystic Vortex (play costs) is in `effectiveCost`
  * and Piltovan Forge / Risen Altar (ability costs) are in `effectiveAbilityCost`
- * — see costs.ts. Clauses that need events the engine lacks (Threshold of the
- * Gray, "when combat starts here") are still unhandled.
+ * — see costs.ts.
  */
 
 export interface BattlefieldTrigger {
-  on: 'CONQUERED' | 'HELD' | 'DEFENDED' | 'CARD_PLAYED' | 'TURN_BEGAN'
+  on: 'CONQUERED' | 'HELD' | 'DEFENDED' | 'CARD_PLAYED' | 'TURN_BEGAN' | 'COMBAT_STARTED'
   targets?: TargetSpec[]
   effect: Effect
 }
@@ -48,6 +49,24 @@ function norm(s: string): string {
 
 // Bespoke scripts for battlefields the generic clause compiler can't express.
 const BESPOKE: Record<string, BattlefieldScript> = {
+  // "When combat starts here, the attacker and defender each [Add] 1 Energy."
+  //
+  // Both players, so the effect ignores `ctx.controller` and pays out to each
+  // side itself — the trigger is run once for the combat, not once per player.
+  // Core Rules 459.2 puts this in Step 1, before the reaction window, so the
+  // Energy is spendable in the very showdown it opened. Paying it after the
+  // fight would make the card nearly useless.
+  [norm('Threshold of the Gray')]: {
+    triggers: [
+      {
+        on: 'COMBAT_STARTED',
+        effect: (ctx) => {
+          const s = addEnergy(ctx.state, ctx.controller, 1)
+          return addEnergy(s, otherSide(ctx.controller), 1)
+        },
+      },
+    ],
+  },
   // "When you conquer here, look at the top two cards of your Main Deck. You may
   //  recycle one or both of them. Put those you don't back in any order."
   [norm('The Candlelit Sanctum')]: {

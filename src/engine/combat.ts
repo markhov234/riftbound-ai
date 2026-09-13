@@ -483,6 +483,10 @@ export function forceContestedShowdowns(state: GameState, side: PlayerSide): Gam
   for (const index of contestedBattlefields(next, side)) {
     if (next.winner) return next
     next = appendLog(next, `${side} did not declare — battlefield ${index + 1} resolves.`)
+    // Still a combat opening (459), so "when combat starts here" still fires —
+    // there is just no reaction window left to spend the proceeds in.
+    next = emit(next, { type: 'COMBAT_STARTED', index, attacker: side })
+    if (next.winner) return next
     next = resolveShowdown(next, index, side, { forceAuto: true })
   }
   return next

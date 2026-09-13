@@ -833,6 +833,9 @@ function declareShowdown(state: GameState, side: PlayerSide, index: number): Gam
     return appendLog(state, `Battlefield ${index + 1} is not contested.`)
   }
   let next = appendLog(state, `${side} declares a showdown at battlefield ${index + 1}.`)
+  // 459.2.b–d — attacker and defender are established, then triggered abilities
+  // go on the Combat Chain. Both happen before the reaction window opens below.
+  next = emit(next, { type: 'COMBAT_STARTED', index, attacker: side })
   next = emit(next, { type: 'DEFENDED', side: otherSide(side), index })
   if (next.winner) return next
   return {

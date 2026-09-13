@@ -105,6 +105,11 @@ const RULES: Rule[] = [
     /^(player|ai) has no runes left to (channel|recycle)\.$/i,
     (m) => `${dative(m[1])} ${m[2] === 'channel' ? '충전' : '재활용'}할 룬이 없습니다.`,
   ],
+  [/^(.+?): combat begins — ability triggers\.$/i, (m) => `${m[1]}: 전투가 시작되어 능력이 발동합니다.`],
+  [/^(player|ai) adds (\d+) energy\.$/i, (m) => `${side(m[1])} 에너지 ${numObj(m[2])} 얻습니다.`],
+  [/^(player|ai) adds (\d+) Power\.$/i, (m) => `${side(m[1])} 파워 ${numObj(m[2])} 얻습니다.`],
+  // Fall-backs for a non-side source (a card name), where the particle after a
+  // Latin name is genuinely undecidable — see the module header.
   [/^(.+?) adds (.+?) energy\.$/i, (m) => `${m[1]}이(가) 에너지 ${m[2]}을(를) 얻습니다.`],
   [/^(.+?) adds (.+?) Power\.$/i, (m) => `${m[1]}이(가) 파워 ${m[2]}을(를) 얻습니다.`],
   [/^(player|ai) gains (\d+) XP\.$/i, (m) => `${side(m[1])} 경험치(XP) ${numObj(m[2])} 얻습니다.`],
