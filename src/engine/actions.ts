@@ -11,7 +11,7 @@ import {
 } from '../types/game'
 import { resumeShowdownFromAssignment, validateAssignment } from './combat'
 import { legendAbilities, scriptFor } from './abilities/scripts'
-import { resolveTargets, TargetSpec } from './abilities/targets'
+import { hasLegalTargetsFrom, resolveTargets, TargetSpec } from './abilities/targets'
 import { discard, recycleFromTrash } from './abilities/effects'
 import { SpellTiming } from './abilities/types'
 import { canActWhenSick, deflectSurcharge, hasGanking } from './keywords'
@@ -231,6 +231,15 @@ export function canPlay(
   if (fromFacedown !== undefined) {
     const fd = facedownAt(state, fromFacedown)
     if (!fd || fd.card.id !== card.id) return { ok: false, reason: 'not the hidden card' }
+    // 811.1.d — a *spell* with no valid target under the battlefield
+    // restriction cannot be played from Hidden at all. A permanent still can;
+    // its play effect simply finds nothing to choose.
+    if (card.type === 'spell') {
+      const playSpecs = scriptFor(card)?.play?.targets
+      if (!hasLegalTargetsFrom(state, side, playSpecs, fromFacedown)) {
+        return { ok: false, reason: 'no legal target at that battlefield' }
+      }
+    }
     const check = canPlayFromFacedown(state, side, fromFacedown)
     if (!check.ok) return check
     // 811.1.d.1 — a hidden permanent must be played to *that* battlefield, which
@@ -494,11 +503,14 @@ function castCard(
   if (!check.ok) return appendLog(state, `Can't play ${card.name}: ${check.reason}.`)
 
   const specs: TargetSpec[] | undefined = scriptFor(card)?.play?.targets
+  // 811.1.d.2 — from Hidden, choices come from the battlefield it was hidden at.
   const targets = resolveTargets(
     state,
     side,
     specs,
     { instanceIds: targetInstanceIds, stackId: targetStackId },
+    undefined,
+    fromFacedown,
   )
   if (targets === null) return appendLog(state, `Can't play ${card.name}: invalid targets.`)
 

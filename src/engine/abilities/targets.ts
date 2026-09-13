@@ -47,6 +47,16 @@ export interface TargetSpec {
   label?: string
   /** Colours the highlight: a good thing for the target, or a bad one. */
   intent?: 'buff' | 'harm'
+  /**
+   * 811.1.d.2's carve-out. A card played from Hidden normally chooses its
+   * targets from among options at the battlefield it was hidden at — "unless
+   * the ability explicitly restricts targeting in a way that makes this
+   * impossible". Tideturner is the rulebook's own example: "a unit you control
+   * **at another location**" can never be satisfied at its own battlefield, so
+   * it targets freely. Set this on specs whose wording rules that battlefield
+   * out; it cannot be inferred, because the exclusion lives in the effect.
+   */
+  anyLocation?: boolean
 }
 
 /** "a friendly unit", "an enemy unit", … — the noun the UI prompts with. */
@@ -76,6 +86,8 @@ export function legalUnitTargets(
   chooser: PlayerSide,
   spec: TargetSpec,
   source?: { instanceId: string },
+  /** 811.1.d.2 — played from Hidden, so choices come from this battlefield. */
+  atBattlefield?: number,
 ): UnitInPlay[] {
   let units = allUnits(state)
   switch (spec.kind) {
@@ -97,6 +109,12 @@ export function legalUnitTargets(
       break
   }
   if (spec.filter) units = units.filter((u) => spec.filter!(u, state))
+  // 811.1.d.2 — a card played from Hidden chooses only from that battlefield.
+  if (atBattlefield !== undefined && !spec.anyLocation) {
+    units = units.filter(
+      (u) => u.location.kind === 'battlefield' && u.location.index === atBattlefield,
+    )
+  }
   return units
 }
 
@@ -121,6 +139,8 @@ export function resolveTargets(
   specs: TargetSpec[] | undefined,
   picked: { instanceIds?: string[]; stackId?: string },
   source?: { instanceId: string },
+  /** 811.1.d.2 — played from Hidden, so choices come from this battlefield. */
+  atBattlefield?: number,
 ): ResolvedTarget[] | null {
   if (!specs || specs.length === 0) return []
 
@@ -147,7 +167,7 @@ export function resolveTargets(
     const isGear = GEAR_KINDS.has(spec.kind)
     const legal: { instanceId: string }[] = isGear
       ? legalGearTargets(state, chooser, spec, source)
-      : legalUnitTargets(state, chooser, spec, source)
+      : legalUnitTargets(state, chooser, spec, source, atBattlefield)
     for (let i = 0; i < need; i++) {
       const id = ids.shift()
       if (!id) {
@@ -159,6 +179,30 @@ export function resolveTargets(
     }
   }
   return resolved
+}
+
+/**
+ * 811.1.d — "A card cannot be played from Hidden if it is a spell with no valid
+ * targets under these restrictions."
+ *
+ * Only spells: a permanent played from Hidden still enters, and its play effect
+ * simply finds nothing to choose. Optional specs never block a play.
+ */
+export function hasLegalTargetsFrom(
+  state: GameState,
+  chooser: PlayerSide,
+  specs: TargetSpec[] | undefined,
+  atBattlefield: number,
+): boolean {
+  for (const spec of specs ?? []) {
+    if (spec.optional) continue
+    if (spec.kind === 'player' || spec.kind === 'self' || spec.kind === 'stackSpell') continue
+    const legal = GEAR_KINDS.has(spec.kind)
+      ? legalGearTargets(state, chooser, spec)
+      : legalUnitTargets(state, chooser, spec, undefined, atBattlefield)
+    if (legal.length < specCount(spec)) return false
+  }
+  return true
 }
 
 /** Does this spec set need player input, or can it be auto/empty-resolved? */

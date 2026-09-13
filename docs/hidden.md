@@ -34,14 +34,32 @@ Implemented in `src/engine/hidden.ts`, with state on each battlefield
   `fromFacedown`, for the cards that watch *any* card being played that way
   (Katarina - Reckless, Black Market Broker).
 
-## Not implemented
+## Rule 811.1.d — targeting from Hidden (Part 2.75)
 
-- **811.1.d.2 — the target restriction.** A hidden spell, or the play effect of
-  a hidden permanent, should have to choose its targets from among options *at
-  that battlefield*. Targets are currently chosen freely. The placement half
-  (d.1) **is** enforced; this half is not.
-- **811.1.d — "cannot be played from Hidden with no valid targets"** follows
-  from the above, and is likewise unenforced.
+Enforced. A card played from Hidden chooses its targets from among options at
+the battlefield it was hidden at, and a **spell** with no legal target there
+cannot be played from Hidden at all (a permanent still can; its play effect
+simply finds nothing).
+
+Three paths carry the restriction, because a rule enforced in only one of them
+is a rule the other two can break:
+
+- **The spell / gear play** — `resolveTargets` takes the battlefield index, and
+  `canPlay` refuses a spell with nothing legal there (811.1.d).
+- **The play effect of a hidden permanent** — the auto-picker in events.ts
+  restricts to the source’s own battlefield, which 811.1.d.1 guarantees is the
+  one it was hidden at. Scoped to `UNIT_ENTERED` deliberately: the
+  `playedFaceDown` counter is never cleared, so using it more widely would
+  restrict that unit’s abilities for the rest of the game.
+- **The choosers** — the AI’s `pickTargets` and the board’s target highlighting.
+  Without these the AI proposed illegal plays in a retry loop, and the UI lit up
+  units the engine would refuse.
+
+**The carve-out is explicit, not inferred.** 811.1.d.2 exempts an ability whose
+wording can never be satisfied at that battlefield, and the rulebook’s own
+example is Tideturner (“a unit you control **at another location**”). That
+exclusion lives in the effect, not the target spec, so it cannot be detected —
+`TargetSpec.anyLocation` marks it by hand.
 ## The AI (Part 2.74)
 
 The AI hides and replays. `candidateActions` proposes a `HIDE_CARD` for every

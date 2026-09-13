@@ -937,6 +937,10 @@ export const CARD_SCRIPTS: Record<string, CardScript> = Object.fromEntries([
             optional: true,
             label: 'to swap places with',
             intent: 'buff',
+            // 811.1.d.2's worked example: "a unit you control at **another**
+            // location" can never be satisfied at Tideturner's own battlefield,
+            // so playing it from Hidden does not narrow this choice.
+            anyLocation: true,
           },
         ],
         effect: (ctx) => {

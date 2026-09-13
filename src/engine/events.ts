@@ -141,11 +141,39 @@ function autoTargetsForTrigger(
       out.push({ kind: 'player', side: chooser })
       continue
     }
-    const legal = legalUnitTargets(state, chooser, spec, source)
+    // 811.1.d.2 — the *play effect* of a permanent played from Hidden chooses
+    // from its own battlefield, which is the one it was hidden at (811.1.d.1).
+    // Scoped to UNIT_ENTERED on purpose: `playedFaceDown` is never cleared, so
+    // using it anywhere else would restrict the unit's abilities for the rest
+    // of the game.
+    const hiddenAt =
+      trigger.on === 'UNIT_ENTERED' &&
+      source &&
+      (source.counters.playedFaceDown ?? 0) > 0 &&
+      source.location.kind === 'battlefield'
+        ? source.location.index
+        : undefined
+    const legal = legalUnitTargets(state, chooser, spec, source, hiddenAt)
+    // Honour `intent`. Sorting a bare `unit` spec by Might alone made a
+    // "deal N to a unit" trigger shoot the biggest unit on the board — which is
+    // very often the source itself, since it has just entered and tends to be
+    // the expensive one. `pickTargets` in ai.ts already reads intent; this
+    // auto-picker did not, so every scripted trigger with an open target was
+    // liable to hit its own side.
+    const side = (u: UnitInPlay) => (u.owner === chooser ? 'mine' : 'theirs')
+    const byMight = (a: UnitInPlay, b: UnitInPlay) => b.card.might - a.card.might
+    let pool = legal
+    if (spec.intent === 'harm') {
+      const enemies = legal.filter((u) => side(u) === 'theirs')
+      if (enemies.length) pool = enemies
+    } else if (spec.intent === 'buff') {
+      const friends = legal.filter((u) => side(u) === 'mine')
+      if (friends.length) pool = friends
+    }
     const pick =
       spec.kind === 'friendlyUnit' || spec.kind === 'self'
-        ? legal[0]
-        : [...legal].sort((a, b) => b.card.might - a.card.might)[0]
+        ? pool[0]
+        : [...pool].sort(byMight)[0]
     if (pick) out.push({ kind: 'unit', instanceId: pick.instanceId })
   }
   return out

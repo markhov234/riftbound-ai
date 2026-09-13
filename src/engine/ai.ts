@@ -104,8 +104,10 @@ function pickUnitForSpec(
   state: GameState,
   side: PlayerSide,
   spec: TargetSpec,
+  /** 811.1.d.2 — played from Hidden, so choices come from this battlefield. */
+  atBattlefield?: number,
 ): string | undefined {
-  const legal = legalUnitTargets(state, side, spec)
+  const legal = legalUnitTargets(state, side, spec, undefined, atBattlefield)
   if (legal.length === 0) return undefined
 
   // Whether this target is a good thing or a bad thing to receive. Kinds that
@@ -132,6 +134,13 @@ export function pickTargets(
   state: GameState,
   side: PlayerSide,
   specs: TargetSpec[] | undefined,
+  /**
+   * 811.1.d.2 — when the card is being played from Hidden, its choices come
+   * from the battlefield it was hidden at. Without this the AI picked freely,
+   * the engine refused the play as mis-targeted, and it retried the same
+   * illegal action until the turn guard stopped it.
+   */
+  atBattlefield?: number,
 ): { targetInstanceIds: string[]; targetStackId?: string } {
   const targetInstanceIds: string[] = []
   let targetStackId: string | undefined
@@ -143,7 +152,7 @@ export function pickTargets(
     if (spec.kind === 'player' || spec.kind === 'self') continue
     const count = spec.count ?? 1
     for (let i = 0; i < count; i++) {
-      const id = pickUnitForSpec(state, side, spec)
+      const id = pickUnitForSpec(state, side, spec, atBattlefield)
       if (id && !targetInstanceIds.includes(id)) targetInstanceIds.push(id)
     }
   }
@@ -217,7 +226,7 @@ function facedownActions(state: GameState, side: PlayerSide): GameAction[] {
       continue
     }
     const specs = scriptFor(card)?.play?.targets
-    const { targetInstanceIds, targetStackId } = pickTargets(state, side, specs)
+    const { targetInstanceIds, targetStackId } = pickTargets(state, side, specs, bf.index)
     const needed = (specs ?? [])
       .filter((sp) => sp.kind !== 'player' && sp.kind !== 'self' && !sp.optional)
       .reduce((n, sp) => n + (sp.kind === 'stackSpell' ? 0 : sp.count ?? 1), 0)

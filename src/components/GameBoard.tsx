@@ -676,7 +676,11 @@ export default function GameBoard({ initialState, onExit }: Props) {
     if (spec.kind === 'gear' || spec.kind === 'friendlyGear' || spec.kind === 'otherGear') {
       for (const g of legalGearTargets(state, 'player', spec)) ids.add(g.instanceId)
     } else {
-      for (const u of legalUnitTargets(state, 'player', spec)) ids.add(u.instanceId)
+      // 811.1.d.2 — a card played from Hidden chooses only from the
+      // battlefield it was hidden at, so highlight only those. Offering a unit
+      // the engine will refuse is worse than not offering it.
+      for (const u of legalUnitTargets(state, 'player', spec, undefined, targeting.fromFacedown))
+        ids.add(u.instanceId)
     }
     // Keep already-picked ids clickable so a mis-pick can be undone.
     for (const id of targeting.pickedUnits) ids.add(id)
@@ -956,9 +960,16 @@ export default function GameBoard({ initialState, onExit }: Props) {
    * 36px card back tucked in a panel corner is easiest to miss.
    */
   const playableFacedown = state.battlefields
-    .filter(
-      (bf) => bf.facedown?.owner === 'player' && canPlayFromFacedown(state, 'player', bf.index).ok,
-    )
+    .filter((bf) => {
+      const fd = bf.facedown
+      if (fd?.owner !== 'player' || !canPlayFromFacedown(state, 'player', bf.index).ok) return false
+      // 811.1.d — a spell with no legal target at that battlefield cannot be
+      // played from Hidden. `canPlay` owns that rule; asking it here keeps the
+      // button from offering a play the engine would refuse.
+      const to =
+        fd.card.type === 'unit' ? ({ kind: 'battlefield', index: bf.index } as const) : undefined
+      return canPlay(state, 'player', fd.card, to, bf.index).ok
+    })
     .map((bf) => bf.index)
 
   /**
