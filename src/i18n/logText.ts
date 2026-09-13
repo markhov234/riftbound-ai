@@ -105,6 +105,14 @@ const RULES: Rule[] = [
     /^(player|ai) has no runes left to (channel|recycle)\.$/i,
     (m) => `${dative(m[1])} ${m[2] === 'channel' ? '충전' : '재활용'}할 룬이 없습니다.`,
   ],
+  // The hide line must never name the card (128.4) — the engine already omits
+  // it, and the Korean must not reintroduce it.
+  [/^(player|ai) hides a card at battlefield (\d+)\.$/i,
+   (m) => `${side(m[1])} 전장 ${m[2]}에 카드 1장을 숨깁니다.`],
+  [/^(player|ai) plays (.+?) from hiding at (.+?)\.$/i,
+   (m) => `${side(m[1])} 숨겨둔 ${m[2]}을(를) ${numTo(m[3])} 냅니다.`],
+  [/^(player|ai) plays (.+?) from hiding\.$/i,
+   (m) => `${side(m[1])} 숨겨둔 ${m[2]}을(를) 냅니다.`],
   [/^(.+?): combat begins — ability triggers\.$/i, (m) => `${m[1]}: 전투가 시작되어 능력이 발동합니다.`],
   [/^(player|ai) adds (\d+) energy\.$/i, (m) => `${side(m[1])} 에너지 ${numObj(m[2])} 얻습니다.`],
   [/^(player|ai) adds (\d+) Power\.$/i, (m) => `${side(m[1])} 파워 ${numObj(m[2])} 얻습니다.`],

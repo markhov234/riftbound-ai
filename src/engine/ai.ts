@@ -7,6 +7,7 @@ import { scriptFor } from './abilities/scripts'
 import { showdownMight } from './keywords'
 import { legalStackTargets, legalUnitTargets, TargetSpec } from './abilities/targets'
 import { allUnits, controllerOf, getPlayer, otherSide, ownUnits, unitsAt } from './state'
+import { canHide, canPlayFromFacedown, hasHidden } from './hidden'
 
 // ── Evaluation ────────────────────────────────────────────────────────────
 
@@ -69,6 +70,26 @@ export function boardScore(state: GameState, side: PlayerSide): number {
   // 3 energy but only ever cost 0.4, so the trade always looked good. Pricing
   // the card above the energy it releases is what stops it.
   score += me.hand.slice(0, 8).reduce((n, c) => n + 0.4 + 0.18 * (c.energy + c.power), 0)
+
+  // A card in the Facedown Zone (107.3). Without a term here the AI could never
+  // hide: hiding spends a rune and removes a card from hand, so every hide
+  // scored as a pure loss and the greedy search discarded it every time.
+  //
+  // A hand card's value plus a flat premium for the free replay (811.6) and the
+  // surprise — deliberately *close* to the hand-card line. Pricing a held card
+  // far above the hand value is a hoarding incentive in principle: holding
+  // would beat using, and a hidden card is only worth anything because it gets
+  // played. Measured over 12 preset games, `0.6 + 0.45 * cost` and this give
+  // the same replay rate (15 vs 14 of 38), so this is the defensive choice
+  // rather than a measured improvement. Halved at a contested battlefield —
+  // losing control reveals and trashes it (107.3.d).
+  for (const bf of state.battlefields) {
+    const fd = bf.facedown
+    if (!fd) continue
+    const risky = controllerOf(bf) === 'contested'
+    const worth = (0.9 + 0.18 * (fd.card.energy + fd.card.power)) * (risky ? 0.5 : 1)
+    score += (fd.owner === side ? 1 : -1) * worth
+  }
   score += me.runes.channeled.length * 0.3
   // Energy resets to `channeled.length` each upkeep, so leftovers are wasted.
   // Keep this well under the 0.3 ramp bonus above: at 0.7 a channel scored
@@ -183,6 +204,43 @@ function candidateActions(state: GameState, side: PlayerSide): GameAction[] {
   for (const bf of state.battlefields) {
     if (unitsAt(bf, side).length > 0 && controllerOf(bf) === 'contested') {
       out.push({ type: 'DECLARE_SHOWDOWN', index: bf.index })
+    }
+  }
+
+  // [Hidden] — bank a card face down at a battlefield you control, to replay it
+  // free on a later turn (811.6). `canHide` owns every rule; this only proposes.
+  // Hand order is stable, so hiding is deterministic for a given state.
+  for (const card of getPlayer(state, side).hand) {
+    if (!hasHidden(card)) continue
+    for (const bf of state.battlefields) {
+      if (canHide(state, side, card, bf.index).ok) {
+        out.push({ type: 'HIDE_CARD', card, index: bf.index })
+      }
+    }
+  }
+
+  // …and the other half. Hiding a card and never playing it is strictly worse
+  // than never hiding: a card and a rune spent for nothing.
+  for (const bf of state.battlefields) {
+    const fd = bf.facedown
+    if (!fd || fd.owner !== side) continue
+    if (!canPlayFromFacedown(state, side, bf.index).ok) continue
+    const card = fd.card
+    if (card.type === 'unit') {
+      // 811.1.d.1 — a permanent played from Hidden enters at that battlefield.
+      out.push({ type: 'PLAY_UNIT', card, to: { kind: 'battlefield', index: bf.index }, fromFacedown: bf.index })
+      continue
+    }
+    const specs = scriptFor(card)?.play?.targets
+    const { targetInstanceIds, targetStackId } = pickTargets(state, side, specs)
+    const needed = (specs ?? [])
+      .filter((sp) => sp.kind !== 'player' && sp.kind !== 'self' && !sp.optional)
+      .reduce((n, sp) => n + (sp.kind === 'stackSpell' ? 0 : sp.count ?? 1), 0)
+    if (targetInstanceIds.length < needed) continue
+    if (card.type === 'spell') {
+      out.push({ type: 'PLAY_SPELL', card, targetInstanceIds, targetStackId, fromFacedown: bf.index })
+    } else {
+      out.push({ type: 'PLAY_GEAR', card, targetInstanceIds, fromFacedown: bf.index })
     }
   }
 

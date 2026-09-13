@@ -42,5 +42,33 @@ Implemented in `src/engine/hidden.ts`, with state on each battlefield
   (d.1) **is** enforced; this half is not.
 - **811.1.d — "cannot be played from Hidden with no valid targets"** follows
   from the above, and is likewise unenforced.
-- **The AI never hides.** It plays Hidden cards normally from hand, which is
-  legal (811.3) but leaves value on the table.
+## The AI (Part 2.74)
+
+The AI hides and replays. `candidateActions` proposes a `HIDE_CARD` for every
+Hidden card in hand at every battlefield `canHide` allows, and a play-from-
+facedown for anything in its own Facedown Zone that `canPlayFromFacedown`
+clears. All the rules live in `hidden.ts`; the AI only proposes.
+
+`boardScore` needed a term for a facedown card, or hiding could never be
+chosen: it spends a rune and removes a card from hand, so every hide scored as
+a pure loss and the greedy search discarded it. The card is priced at a hand
+card's value plus a flat premium, deliberately *close* to the hand-card line —
+pricing a held card far above it is a hoarding incentive, since holding would
+then beat using. (Measured: `0.6 + 0.45 * cost` and `0.9 + 0.18 * cost` give
+the same replay rate, 15 vs 14 of 38, so the low price is defensive rather than
+a measured win.) It is halved at a contested battlefield, where losing control
+would reveal and trash it.
+
+Measured over 12 preset games of the Vex deck (8 Hidden cards; Irelia has 3,
+the other three presets none): **38 hidden → 14 replayed, 17 still hidden when
+the game ended, 7 lost with the battlefield.** Every one accounted for. Over 20
+games the AI holds the opponent to 1.35 points with Hidden enabled against 1.60
+with it disabled — a small real gain. Win rate is useless here: the AI beats
+the scripted bot 20/20 either way.
+
+**Playing from hiding now says so in the log.** It used to read as a plain
+"ai plays X", identical to a card from hand, which hid the one thing the
+keyword is for. Rule 421.4 reveals a facedown card as it changes zones, so
+naming it is correct — and a surprise the player cannot see is not a surprise.
+The *hide* line still never names the card (128.4).
+

@@ -447,7 +447,12 @@ function playUnit(
       next = emit(next, { type: 'CONQUERED', side, index: to.index, excess: 0 })
     }
   }
-  next = appendLog(next, `${side} plays ${card.name}${locLabel(to)}.`)
+  next = appendLog(
+    next,
+    fromFacedown !== undefined
+      ? `${side} plays ${card.name} from hiding${locLabel(to)}.`
+      : `${side} plays ${card.name}${locLabel(to)}.`,
+  )
 
   next = registerCardPlayed(next, side, card, fromFacedown !== undefined)
   next = emit(next, { type: 'UNIT_ENTERED', instanceId: unit.instanceId, controller: side })
@@ -533,7 +538,12 @@ function castCard(
     next = appendLog(next, `${side} pays the additional cost for ${card.name}.`)
   }
   if (rep) next = appendLog(next, `${side} pays [Repeat] for ${card.name}.`)
-  next = appendLog(next, `${side} plays ${card.name}.`)
+  next = appendLog(
+    next,
+    fromFacedown !== undefined
+      ? `${side} plays ${card.name} from hiding.`
+      : `${side} plays ${card.name}.`,
+  )
   next = registerCardPlayed(next, side, card, fromFacedown !== undefined)
   next = pushToStack(next, {
     ...makeSpellItem(side, card, targets),
