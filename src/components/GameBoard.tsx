@@ -64,6 +64,7 @@ import {
 } from './useDragDrop'
 import { useLocale, useT, type StringKey, type TFn } from '../i18n'
 import { abilityLabelKo, choiceLabelKo, targetLabelKo } from '../i18n/abilityText'
+import { TutorialCoach } from './TutorialCoach'
 import { logLineKo, showdownSummaryKo } from '../i18n/logText'
 
 interface Props {
@@ -2449,6 +2450,8 @@ export default function GameBoard({ initialState, onExit }: Props) {
       )}
 
       {/* Action bar */}
+      <TutorialCoach state={state} />
+
       <div className="flex items-center gap-3 px-4 py-2 bg-panel border-t border-line shrink-0 max-md:gap-2 max-md:px-2 max-md:[&_button]:whitespace-nowrap max-md:[&_span]:whitespace-nowrap">
         <span
           className={clsx(

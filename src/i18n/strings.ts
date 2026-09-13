@@ -409,6 +409,43 @@ export const en = {
   'domain.order': 'Order',
   'domain.chaos': 'Chaos',
   'domain.colorless': 'Colorless',
+  // ── Tutorial ──────────────────────────────────────────────────────────
+  'tut.badge': 'TUTORIAL',
+  'tut.gotIt': 'Got it',
+  'tut.skipAll': 'Turn off tips',
+  'menu.tutorial': 'Show tutorial tips',
+  'menu.tutorialHint': 'Short explanations the first time each thing comes up.',
+  'menu.tutorialReset': 'Show them again',
+  'tut.zones.title': 'Two kinds of place',
+  'tut.zones.body':
+    'Your Base (bottom, cyan edge) is home — units arrive there and are safe. The Battlefields (top) are the contested ground: only units standing there can score you points.',
+  'tut.runes.title': 'Runes pay for everything',
+  'tut.runes.body':
+    'You channel 2 runes a turn, automatically. Each ready rune is 1 Energy (⚡). Recycling a rune instead gives 1 Power (◈), which some cards need. Energy resets every turn, so spend it.',
+  'tut.playCard.title': 'Playing a card',
+  'tut.playCard.body':
+    'Drag a card from your hand onto your Base, or click it and then click where it goes. Units always arrive at your Base and enter exhausted — they cannot act until your next turn.',
+  'tut.move.title': 'Moving out',
+  'tut.move.body':
+    'Drag a ready unit from your Base to a Battlefield to claim it. Moving exhausts the unit. Holding a battlefield at the start of your turn is what earns points.',
+  'tut.contest.title': 'Contested',
+  'tut.contest.body':
+    'Both sides have units here, so nobody controls it. Moving in does NOT start a fight on its own — you declare a Showdown when you are ready, or it resolves automatically at the end of your turn.',
+  'tut.scoring.title': 'How you win',
+  'tut.scoring.body':
+    'First to 8 points. You score at the start of your turn for each battlefield you hold, and immediately when you conquer one. The counter is at the top of the screen.',
+  'tut.showdown.title': 'Showdown',
+  'tut.showdown.body':
+    'Both sides add up Might and deal that much damage to each other at once. Before it resolves you both get a chance to react — play an Action or Reaction card now if you have one.',
+  'tut.respond.title': 'Your turn to react',
+  'tut.respond.body':
+    'Something is waiting to resolve. You may answer it with a card that has [Action] or [Reaction], or pass and let it happen. The newest thing resolves first.',
+  'tut.hidden.title': 'A hidden card',
+  'tut.hidden.body':
+    'A card face down at a battlefield. From the next turn on it can be played for free, even on the opponent\u2019s turn. If you lose that battlefield it is trashed unplayed. A red back is theirs; a cyan one is yours.',
+  'tut.keywords.title': 'Keywords',
+  'tut.keywords.body':
+    'Words in [brackets] are keywords. Hover any of them to see what it does — they stay in English so they match the printed card.',
 } as const
 
 export type StringKey = keyof typeof en
@@ -804,6 +841,43 @@ export const ko: Record<StringKey, string> = {
   'domain.order': '질서',
   'domain.chaos': '혼돈',
   'domain.colorless': '무색',
+  // ── Tutorial ──────────────────────────────────────────────────────────
+  'tut.badge': '튜토리얼',
+  'tut.gotIt': '알겠어요',
+  'tut.skipAll': '설명 끄기',
+  'menu.tutorial': '튜토리얼 설명 표시',
+  'menu.tutorialHint': '각 요소가 처음 나올 때 짧게 설명해 줍니다.',
+  'menu.tutorialReset': '다시 보기',
+  'tut.zones.title': '두 종류의 장소',
+  'tut.zones.body':
+    '내 기지(아래쪽, 청록색 테두리)는 집입니다. 유닛은 여기로 나오고 안전합니다. 전장(위쪽)은 서로 다투는 곳으로, 여기 있는 유닛만 점수를 가져다줍니다.',
+  'tut.runes.title': '룬으로 모든 비용을 냅니다',
+  'tut.runes.body':
+    '매 턴 룬 2개가 자동으로 충전됩니다. 준비된 룬 1개는 에너지(⚡) 1입니다. 대신 룬을 재활용하면 파워(◈) 1을 얻는데, 일부 카드는 이것을 요구합니다. 에너지는 매 턴 초기화되니 아끼지 말고 쓰세요.',
+  'tut.playCard.title': '카드 내기',
+  'tut.playCard.body':
+    '손패의 카드를 내 기지로 끌어다 놓거나, 카드를 누른 뒤 놓을 곳을 누르세요. 유닛은 항상 내 기지로 나오며 소진된 채 등장합니다 — 다음 턴이 되어야 움직일 수 있습니다.',
+  'tut.move.title': '전장으로 이동',
+  'tut.move.body':
+    '준비된 유닛을 내 기지에서 전장으로 끌어다 놓으면 그곳을 차지합니다. 이동하면 유닛이 소진됩니다. 내 턴이 시작될 때 전장을 유지하고 있으면 점수를 얻습니다.',
+  'tut.contest.title': '다툼 중',
+  'tut.contest.body':
+    '양쪽 유닛이 함께 있어 아무도 지배하지 못합니다. 들어간다고 바로 싸우지는 않습니다 — 준비되면 직접 대결을 선언하거나, 내 턴이 끝날 때 자동으로 해결됩니다.',
+  'tut.scoring.title': '승리 방법',
+  'tut.scoring.body':
+    '먼저 8점을 얻으면 승리합니다. 내 턴이 시작될 때 지배 중인 전장마다 점수를 얻고, 전장을 점령하는 즉시에도 얻습니다. 점수는 화면 위쪽에 있습니다.',
+  'tut.showdown.title': '대결',
+  'tut.showdown.body':
+    '양쪽이 위력을 합산해 서로에게 동시에 피해를 줍니다. 해결되기 전에 양쪽 모두 반응할 기회가 있습니다 — [Action]이나 [Reaction] 카드가 있다면 지금 내세요.',
+  'tut.respond.title': '반응할 차례',
+  'tut.respond.body':
+    '해결을 기다리는 것이 있습니다. [Action]이나 [Reaction] 카드로 대응하거나, 패스해서 그대로 진행할 수 있습니다. 가장 나중에 올라간 것부터 해결됩니다.',
+  'tut.hidden.title': '숨겨진 카드',
+  'tut.hidden.body':
+    '전장에 뒷면으로 놓인 카드입니다. 다음 턴부터 비용 없이 낼 수 있고, 상대 턴에도 낼 수 있습니다. 그 전장을 잃으면 쓰지 못한 채 버려집니다. 빨간 뒷면은 상대의 것, 청록색은 내 것입니다.',
+  'tut.keywords.title': '키워드',
+  'tut.keywords.body':
+    '[대괄호] 안의 단어는 키워드입니다. 마우스를 올리면 설명이 나옵니다 — 실제 카드와 맞추기 위해 영어로 둡니다.',
 }
 
 export const DICTIONARIES: Record<Locale, Record<StringKey, string>> = { en, ko }

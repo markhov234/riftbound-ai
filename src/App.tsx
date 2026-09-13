@@ -12,6 +12,7 @@ import DiceRoll from './components/DiceRoll'
 import GlossaryModal from './components/GlossaryModal'
 import { SegmentBar } from './components/ui'
 import { LOCALES, useLocale } from './i18n'
+import { readTutorialEnabled, resetTutorial, writeTutorialEnabled } from './data/tutorial'
 
 type View = 'menu' | 'deck-builder' | 'battlefield-select' | 'dice' | 'game'
 
@@ -47,6 +48,7 @@ export default function App() {
   const [progress, setProgress] = useState<LoadProgress | null>(null)
   const [selectedDeckId, setSelectedDeckId] = useState('')
   const [aiDifficulty, setAiDifficulty] = useState<AIDifficulty>('medium')
+  const [tutorial, setTutorial] = useState(readTutorialEnabled)
   const [gameState, setGameState] = useState<GameState | null>(null)
   const [userDecks, setUserDecks] = useState<Deck[]>([])
   const [pendingMatch, setPendingMatch] = useState<
@@ -286,6 +288,39 @@ export default function App() {
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* On by default — the person who has never played is the one who
+              needs it, and they are also the least likely to go looking for a
+              setting to turn it on. */}
+          <div className="mb-6">
+            <label className="flex items-start gap-2.5 cursor-pointer group">
+              <input
+                type="checkbox"
+                checked={tutorial}
+                onChange={(e) => {
+                  setTutorial(e.target.checked)
+                  writeTutorialEnabled(e.target.checked)
+                }}
+                className="mt-0.5 w-4 h-4 shrink-0 accent-accent cursor-pointer"
+              />
+              <span className="min-w-0">
+                <span className="block text-sm text-txt group-hover:text-accent transition-colors">
+                  {t('menu.tutorial')}
+                </span>
+                <span className="block text-tiny text-txtFaint leading-snug">
+                  {t('menu.tutorialHint')}
+                </span>
+              </span>
+            </label>
+            {tutorial && (
+              <button
+                onClick={resetTutorial}
+                className="mt-1.5 ml-6.5 text-micro text-txtFaint hover:text-accent transition-colors underline underline-offset-2"
+              >
+                {t('menu.tutorialReset')}
+              </button>
+            )}
           </div>
 
           <button
