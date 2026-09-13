@@ -194,6 +194,43 @@ function cardActions(state: GameState, side: PlayerSide, card: Card): GameAction
   return [{ type: 'PLAY_GEAR', card, targetInstanceIds }]
 }
 
+/**
+ * Every card `side` could play out of its own Facedown Zone right now.
+ *
+ * Shared by the main-phase search and by `respondOrPass`, because **the
+ * opponent's turn is when [Hidden] earns its keep**: 811.6 gives a matured
+ * hidden card the Reaction keyword, so the natural play is to flip it in the
+ * defender's window of a showdown you are about to lose. Offered only on the
+ * main-phase path, the AI hid cards and then sat on them while the battlefield
+ * — and the card with it (107.3.d) — was taken off it.
+ */
+function facedownActions(state: GameState, side: PlayerSide): GameAction[] {
+  const out: GameAction[] = []
+  for (const bf of state.battlefields) {
+    const fd = bf.facedown
+    if (!fd || fd.owner !== side) continue
+    if (!canPlayFromFacedown(state, side, bf.index).ok) continue
+    const card = fd.card
+    if (card.type === 'unit') {
+      // 811.1.d.1 — a permanent played from Hidden enters at that battlefield.
+      out.push({ type: 'PLAY_UNIT', card, to: { kind: 'battlefield', index: bf.index }, fromFacedown: bf.index })
+      continue
+    }
+    const specs = scriptFor(card)?.play?.targets
+    const { targetInstanceIds, targetStackId } = pickTargets(state, side, specs)
+    const needed = (specs ?? [])
+      .filter((sp) => sp.kind !== 'player' && sp.kind !== 'self' && !sp.optional)
+      .reduce((n, sp) => n + (sp.kind === 'stackSpell' ? 0 : sp.count ?? 1), 0)
+    if (targetInstanceIds.length < needed) continue
+    if (card.type === 'spell') {
+      out.push({ type: 'PLAY_SPELL', card, targetInstanceIds, targetStackId, fromFacedown: bf.index })
+    } else {
+      out.push({ type: 'PLAY_GEAR', card, targetInstanceIds, fromFacedown: bf.index })
+    }
+  }
+  return out
+}
+
 function candidateActions(state: GameState, side: PlayerSide): GameAction[] {
   const out: GameAction[] = []
 
@@ -221,28 +258,7 @@ function candidateActions(state: GameState, side: PlayerSide): GameAction[] {
 
   // …and the other half. Hiding a card and never playing it is strictly worse
   // than never hiding: a card and a rune spent for nothing.
-  for (const bf of state.battlefields) {
-    const fd = bf.facedown
-    if (!fd || fd.owner !== side) continue
-    if (!canPlayFromFacedown(state, side, bf.index).ok) continue
-    const card = fd.card
-    if (card.type === 'unit') {
-      // 811.1.d.1 — a permanent played from Hidden enters at that battlefield.
-      out.push({ type: 'PLAY_UNIT', card, to: { kind: 'battlefield', index: bf.index }, fromFacedown: bf.index })
-      continue
-    }
-    const specs = scriptFor(card)?.play?.targets
-    const { targetInstanceIds, targetStackId } = pickTargets(state, side, specs)
-    const needed = (specs ?? [])
-      .filter((sp) => sp.kind !== 'player' && sp.kind !== 'self' && !sp.optional)
-      .reduce((n, sp) => n + (sp.kind === 'stackSpell' ? 0 : sp.count ?? 1), 0)
-    if (targetInstanceIds.length < needed) continue
-    if (card.type === 'spell') {
-      out.push({ type: 'PLAY_SPELL', card, targetInstanceIds, targetStackId, fromFacedown: bf.index })
-    } else {
-      out.push({ type: 'PLAY_GEAR', card, targetInstanceIds, fromFacedown: bf.index })
-    }
-  }
+  out.push(...facedownActions(state, side))
 
   for (const u of ownUnits(state, side)) {
     const abilities = scriptFor(u.card)?.activated ?? []
@@ -317,6 +333,19 @@ function respondOrPass(state: GameState, side: PlayerSide): GameAction {
     const s = boardScore(settle(cast), side)
     if (s > bestScore) {
       bestScore = s
+      best = action
+    }
+  }
+
+  // A matured hidden card is a Reaction (811.6), and this window — the
+  // defender's, in a showdown — is the one it was hidden for. It is also free,
+  // so the only question the scorer has to answer is whether the board is
+  // better with the card on it.
+  for (const action of facedownActions(state, side)) {
+    const after = settle(dispatch(state, action, side))
+    const sc = boardScore(after, side)
+    if (sc > bestScore) {
+      bestScore = sc
       best = action
     }
   }
