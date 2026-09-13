@@ -35,6 +35,7 @@ import {
   legalStackTargets,
   legalUnitTargets,
   legendAbilities,
+  ownUnits,
   combatRoleOf,
   lethalMight,
   mightBonus,
@@ -292,7 +293,9 @@ export default function GameBoard({ initialState, onExit }: Props) {
   const [altHeld, setAltHeld] = useState(false)
   const [pinned, setPinned] = useState<Card | null>(null)
   const [pilesSide, setPilesSide] = useState<'player' | 'ai' | null>(null)
-  const [logExpanded, setLogExpanded] = useState(true)
+  const [logExpanded, setLogExpanded] = useState(
+    () => typeof window === 'undefined' || window.innerWidth >= 768,
+  )
   const [mulliganPicks, setMulliganPicks] = useState<number[]>([])
   const [aiThinking, setAiThinking] = useState(false)
   /** Which edge the big card preview docks to — flipped away from the pointer. */
@@ -396,6 +399,28 @@ export default function GameBoard({ initialState, onExit }: Props) {
   // A rune is recyclable while it is on the board and not already consumed by a
   // rune pip — being exhausted for Energy does not stop it (163.2).
   const canRecycle = canRecycleRune(state, 'player')
+
+  /**
+   * Is there anything at all the player could do with this priority window?
+   *
+   * Rule 337.1.c.3 gives priority back to "the controller of the newest item on
+   * the chain" — so after you cast, it returns to *you* before the opponent
+   * sees it. That is correct, and it matters when you want to stack a second
+   * spell on your own. But when you hold nothing playable, no facedown card and
+   * no usable ability, the game is asking a question with one possible answer,
+   * which is pure friction on every single cast.
+   */
+  const hasResponse =
+    player.hand.some((c) => canPlay(state, 'player', c).ok) ||
+    state.battlefields.some(
+      (bf) => bf.facedown?.owner === 'player' && canPlayFromFacedown(state, 'player', bf.index).ok,
+    ) ||
+    [...ownUnits(state, 'player'), ...player.gear].some((src) =>
+      (scriptFor(src.card)?.activated ?? []).some(
+        (ab) => !ab.when || ab.when(state, src, 'player'),
+      ),
+    ) ||
+    (legendAbilities(player.legend) ?? []).length > 0
   const assigningDamage = state.pendingDamage?.assigningSide === 'player'
 
   // My legend's activatable powers (keep original index for ACTIVATE_ABILITY),
@@ -507,6 +532,37 @@ export default function GameBoard({ initialState, onExit }: Props) {
     const timer = setTimeout(() => setDrawnIds(new Set()), 650)
     return () => clearTimeout(timer)
   }, [state.player.hand])
+
+  /**
+   * Pass automatically when the player holds priority with no legal response.
+   *
+   * Rule 337.1.c.3 hands priority back to the caster, so every spell you cast
+   * used to stop and ask "respond or pass?" even with an empty hand and nothing
+   * to activate. The window is still offered whenever there is a real choice —
+   * this only skips the ones with a single possible answer.
+   *
+   * Deliberately not applied to a pending showdown: declining to act there is a
+   * real decision with consequences, not a formality.
+   */
+  useEffect(() => {
+    if (!myPriority || state.winner) return
+    if (state.stack.length === 0 || state.pendingShowdown) return
+    if (pendingChoice || targeting || assigningDamage) return
+    if (hasResponse) return
+    const timer = setTimeout(() => {
+      setState((s) => (s.priority === 'player' ? dispatch(s, { type: 'PASS_PRIORITY' }, 'player') : s))
+    }, 260)
+    return () => clearTimeout(timer)
+  }, [
+    myPriority,
+    hasResponse,
+    state.stack.length,
+    state.pendingShowdown,
+    state.winner,
+    pendingChoice,
+    targeting,
+    assigningDamage,
+  ])
 
   const act = useCallback((next: GameState) => {
     // Acting on the board dismisses the standing briefing — unless the action
@@ -1359,7 +1415,9 @@ export default function GameBoard({ initialState, onExit }: Props) {
   return (
     <div
       className={clsx(
-        'board-root h-screen bg-board text-white flex flex-col select-none text-sm overflow-hidden',
+        'board-root bg-board text-white flex flex-col select-none text-sm',
+        'h-screen overflow-hidden',
+        'max-md:h-auto max-md:min-h-screen max-md:overflow-y-auto max-md:overflow-x-hidden',
         // The whole board breathes while the game is waiting on you, so
         // "something needs me" is readable in peripheral vision even when your
         // eye is on a card at the far side of the screen.
@@ -1390,7 +1448,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
           up here for a few seconds and then leaves on its own. Nothing to
           dismiss, and it makes an AI response to your spell visible at the
           moment it happens rather than something to infer from the Pass button. */}
-      <div className="fixed inset-x-0 top-14 z-40 flex flex-col items-center gap-1 pointer-events-none px-4">
+      <div className="fixed inset-x-0 top-14 z-40 flex flex-col items-center gap-1 pointer-events-none px-4 max-md:top-auto max-md:bottom-20">
         {aiThinking && (
           <div className="flex items-center gap-2.5 px-3.5 py-1.5 bg-panel/95 border border-danger/50 shadow-raised animate-[rb-fade_0.15s_ease-out] pointer-events-auto">
             <span className="w-2 h-2 rounded-full bg-danger animate-pulse shrink-0" />
@@ -1514,7 +1572,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
       )}
 
       {/* HUD row */}
-      <div className="flex items-center gap-4 px-4 py-2 bg-panel border-b border-line shrink-0">
+      <div className="flex items-center gap-4 px-4 py-2 bg-panel border-b border-line shrink-0 max-md:gap-2 max-md:px-2 max-md:flex-wrap">
         <button onClick={onExit} className="hud-label hover:text-accent">
           {t('board.exit')}
         </button>
@@ -1689,7 +1747,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
           and reclaims that height, while the MOVES panel and the action bar
           below stay in normal flow and are never covered by it. */}
       <div className="relative flex flex-1 min-h-0 flex-col">
-        <div className="flex flex-1 min-h-0">
+        <div className="flex flex-1 min-h-0 max-md:flex-col">
           <div className="flex-1 min-w-0 flex flex-col">
             {/* AI mini-playmat — legend/champion, hand/deck counts, what it has played */}
             <div className="px-4 py-1.5 border-b border-line bg-panel min-h-[56px] flex items-center gap-2 shrink-0">
@@ -1747,7 +1805,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
               </div>
             </div>
 
-            <div className="flex-1 flex items-stretch justify-center gap-[clamp(0.75rem,2.2vw,3rem)] px-[clamp(1rem,3vw,4rem)] min-h-[clamp(150px,24vh,340px)] max-h-[clamp(180px,44vh,470px)] py-2">
+            <div className="flex-1 flex items-stretch justify-center gap-[clamp(0.75rem,2.2vw,3rem)] px-[clamp(1rem,3vw,4rem)] min-h-[clamp(150px,24vh,340px)] max-h-[clamp(180px,44vh,470px)] py-2 max-md:flex-col max-md:max-h-none max-md:px-3 max-md:gap-3">
               {state.battlefields.map((bf) => {
                 const control = controllerOf(bf)
                 const dropCard = canDropCardAt(bf.index)
@@ -1762,6 +1820,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
                     {...dnd.zoneProps(zone, dragOk)}
                     className={clsx(
                       'relative flex-1 max-w-[46rem] h-full border-2 overflow-hidden bg-panel',
+                    'max-md:h-auto max-md:min-h-[132px] max-md:max-w-none',
                       // Who holds this is the single most important fact about a
                       // battlefield, so it owns the frame — not a small pill in a
                       // corner competing with the artwork.
@@ -1939,7 +1998,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
               onToggle={() => setLogExpanded((v) => !v)}
             />
             {logExpanded && (
-              <div className="shrink-0 w-[clamp(220px,20vw,320px)] border-l border-t border-line bg-panel px-3 py-2">
+              <div className="shrink-0 w-[clamp(220px,20vw,320px)] border-l border-t border-line bg-panel px-3 py-2 max-md:w-full max-md:border-l-0">
                 <RuneRail
                   pool={player.runes}
                   onRecycle={
@@ -1957,7 +2016,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
             It grows into the space the floating hand used to leave empty: the
             base is where your units live and was the most cramped zone on the
             board. Units fill from the top, so they stay above the hand. */}
-        <div className="flex items-start gap-2 px-3 py-1 bg-black/20 border-t border-line/50 shrink-0 grow-[0.28] max-h-[24vh] min-h-0">
+        <div className="flex items-start gap-2 px-3 py-1 bg-black/20 border-t border-line/50 shrink-0 grow-[0.28] max-h-[24vh] min-h-0 max-md:flex-wrap max-md:max-h-none max-md:gap-1.5">
           {/* Legend */}
           <div
             className="w-[var(--face-w)] shrink-0"
@@ -2048,7 +2107,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
           <div
             {...dnd.zoneProps(BASE_ZONE, dragTargets(BASE_ZONE))}
             className={clsx(
-              'flex-[3_1_0%] min-w-0 self-stretch border px-2 py-1 transition-transform',
+              'flex-[3_1_0%] min-w-0 self-stretch border px-2 py-1 transition-transform max-md:basis-full max-md:min-h-[84px]',
               dragTargets(BASE_ZONE) && dnd.drag?.over === BASE_ZONE
                 ? 'border-accentBright ring-2 ring-accentBright/70 bg-accent/20'
                 : dragTargets(BASE_ZONE)
@@ -2098,7 +2157,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
           </div>
 
           {/* Gear */}
-          <div className="flex-[1_1_0%] min-w-0 self-stretch border border-line/40 bg-black/10 px-2 py-1">
+          <div className="flex-[1_1_0%] min-w-0 self-stretch border border-line/40 bg-black/10 px-2 py-1 max-md:basis-full">
             <span className="hud-label text-micro">{t('board.gear')}</span>
             <div className="flex gap-1.5 flex-wrap mt-0.5 min-h-[var(--unit-w)]">
               {player.gear.map((g) => (
@@ -2160,6 +2219,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
         <div
           className={clsx(
             'absolute inset-x-0 bottom-0 z-20 pointer-events-none flex items-end gap-3 px-4 pt-2 pb-2',
+            'max-md:static max-md:pointer-events-auto max-md:pt-3 max-md:pb-4',
             'bg-gradient-to-t from-black/55 via-black/30 to-transparent',
             // Hit-testing for a drop is `document.elementFromPoint`, and this
             // band floats over the base. While a card is in flight every part
@@ -2343,7 +2403,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
       )}
 
       {/* Action bar */}
-      <div className="flex items-center gap-3 px-4 py-2 bg-panel border-t border-line shrink-0">
+      <div className="flex items-center gap-3 px-4 py-2 bg-panel border-t border-line shrink-0 max-md:gap-2 max-md:px-2 max-md:[&_button]:whitespace-nowrap max-md:[&_span]:whitespace-nowrap">
         <span
           className={clsx(
             'hud-label px-2 py-0.5 border shrink-0',
@@ -3324,9 +3384,9 @@ function LogPanel({
       <button
         onClick={onToggle}
         title={t('board.showLog')}
-        className="w-7 shrink-0 border-l border-line bg-panel hover:bg-panel2 hud-label text-accent/70 flex items-center justify-center"
+        className="w-7 shrink-0 border-l border-line bg-panel hover:bg-panel2 hud-label text-accent/70 flex items-center justify-center max-md:w-full max-md:border-l-0 max-md:border-t max-md:py-2"
       >
-        <span className="[writing-mode:vertical-rl] rotate-180 tracking-[0.2em]">
+        <span className="[writing-mode:vertical-rl] rotate-180 tracking-[0.2em] max-md:[writing-mode:horizontal-tb] max-md:rotate-0 max-md:tracking-normal">
           {t('board.activityLog')} ▸
         </span>
       </button>
@@ -3336,7 +3396,7 @@ function LogPanel({
   return (
     // Capped rather than full-height: a log that runs the whole board reads as
     // the main column. The list inside scrolls, so nothing is lost.
-    <div className="w-[clamp(220px,20vw,320px)] shrink-0 border-l border-line bg-panel flex flex-col min-h-0 max-h-[52vh]">
+    <div className="w-[clamp(220px,20vw,320px)] shrink-0 border-l border-line bg-panel flex flex-col min-h-0 max-h-[52vh] max-md:w-full max-md:border-l-0 max-md:border-t max-md:max-h-[34vh]">
       <button
         onClick={onToggle}
         className="shrink-0 w-full flex items-center justify-between px-3 py-1.5 hud-label hover:text-accent border-b border-line"
