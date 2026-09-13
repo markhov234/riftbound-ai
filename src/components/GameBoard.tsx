@@ -1992,28 +1992,17 @@ export default function GameBoard({ initialState, onExit }: Props) {
 
           </div>
 
-          {/* Right rail: the log on top, capped and scrolling, with the Rune
-              Pool beneath it. The pool used to live in the hand band, which
-              became absolute — so it floated over the legend and champion
-              tiles. It belongs with the other standing information anyway. */}
+          {/* Right rail: the activity log, and nothing else. The Rune Pool
+              sat here for a while because the hand band was floating and the
+              pool floated over the legend and champion with it. The band is
+              back in normal flow, so the runes are back beside the hand they
+              are spent on. */}
           <div className="flex flex-col min-h-0 shrink-0 overflow-hidden">
             <LogPanel
               log={state.log}
               expanded={logExpanded}
               onToggle={() => setLogExpanded((v) => !v)}
             />
-            {logExpanded && (
-              <div className="shrink-0 w-[clamp(220px,20vw,320px)] border-l border-t border-line bg-panel px-3 py-2 max-md:w-full max-md:border-l-0 max-h-[40%] overflow-y-auto max-md:max-h-none">
-                <RuneRail
-                  pool={player.runes}
-                  onRecycle={
-                    cleanTurn && canRecycle
-                      ? (runeId) => send({ type: 'RECYCLE_RUNE', runeId })
-                      : undefined
-                  }
-                />
-              </div>
-            )}
           </div>
         </div>
 
@@ -2224,7 +2213,7 @@ export default function GameBoard({ initialState, onExit }: Props) {
         <div
           className={clsx(
             'relative z-20 shrink-0 flex items-end gap-3 px-4 pt-2 pb-2',
-            'max-md:pt-3 max-md:pb-4',
+            'max-md:flex-wrap max-md:gap-2 max-md:px-2 max-md:pt-3 max-md:pb-4',
             'bg-black/20 border-t border-line/40',
             // Hit-testing for a drop is `document.elementFromPoint`, and this
             // band floats over the base. While a card is in flight every part
@@ -2239,6 +2228,14 @@ export default function GameBoard({ initialState, onExit }: Props) {
             dnd.drag && '[&_*]:pointer-events-none',
           )}
         >
+          {/* Runes, bottom left — the resource you spend on the cards in the
+              same band, mirroring the deck and trash piles on the right. */}
+          <RuneRail
+            pool={player.runes}
+            onRecycle={
+              cleanTurn && canRecycle ? (runeId) => send({ type: 'RECYCLE_RUNE', runeId }) : undefined
+            }
+          />
 
           {/* Hand — centred, fanned. `overflow-visible` matters: the arc and the
               hover lift both leave this box, and a clipped fan looks broken. */}
@@ -3540,11 +3537,17 @@ function RuneRail({
     },
   )
   chips.push(...pool.recycled.map((card) => ({ card, state: 'recycled' as const })))
-  const readyCount = chips.filter((c) => c.state === 'ready').length
   return (
-    <div className="flex flex-col gap-2">
+    // Laid out for the bottom-left of the hand band: the deck tile, then a
+    // column holding the pool counters above the channeled runes. `items-end`
+    // so it sits on the same baseline as the hand and the trash pile.
+    //
+    // The chip area is capped and scrolls. Ten channeled runes is an ordinary
+    // late-game board and an uncapped wrap grew the band tall enough to eat the
+    // playmat above it.
+    <div className="flex items-end gap-2 shrink-0 max-w-[clamp(150px,20vw,300px)] max-md:order-3 max-md:basis-full max-md:max-w-none">
       {/* Rune deck */}
-      <div className="w-[var(--rune-w)] shrink-0 order-2">
+      <div className="w-[var(--rune-w)] shrink-0">
         <div className="relative aspect-[5/7] border border-line/60 overflow-hidden">
           <CardBack />
           <span className="absolute inset-x-0 bottom-0 py-0.5 text-center text-micro font-bold text-txt tabular-nums bg-black/70">
@@ -3552,8 +3555,38 @@ function RuneRail({
           </span>
         </div>
       </div>
-      {/* Every channeled / recycled rune — wraps, never clipped */}
-      <div className="flex flex-wrap content-end gap-1">
+      <div className="flex flex-col gap-1 min-w-0">
+      {/* The Rune Pool (165) — the floating Energy and Power you can actually
+          spend. Power used to appear only when non-zero, which hid the whole
+          second resource: you cannot plan to recycle for Power if you have
+          never seen a Power counter. Both slots are always on screen now. */}
+      <div className="flex items-center gap-1.5 shrink-0">
+        <span className="hud-label shrink-0">{t('board.runePool')}</span>
+        <div
+          className="flex items-baseline gap-1 px-1.5 py-0.5 border border-accent/60 bg-accent/10 tabular-nums"
+          title={t('rune.energyTip')}
+        >
+          <span className="text-accent text-base font-bold leading-none">⚡{pool.energy}</span>
+        </div>
+        <div
+          className={clsx(
+            'flex items-baseline gap-1 px-1.5 py-0.5 border tabular-nums transition-colors',
+            pool.power > 0 ? 'border-gold/70 bg-gold/10' : 'border-line/60 bg-black/20',
+          )}
+          title={t('rune.powerTip')}
+        >
+          <span
+            className={clsx(
+              'text-base font-bold leading-none',
+              pool.power > 0 ? 'text-gold' : 'text-txtFaint',
+            )}
+          >
+            ◈{pool.power}
+          </span>
+        </div>
+      </div>
+      {/* Every channeled / recycled rune */}
+      <div className="flex flex-wrap content-end gap-1 max-h-[calc(var(--rune-w)*2.1)] overflow-y-auto">
         {chips.map((c, i) => (
           <RuneChip
             key={i}
@@ -3568,39 +3601,6 @@ function RuneRail({
           <span className="text-txtFaint text-micro self-end pb-1">{t('board.noRunes')}</span>
         )}
       </div>
-      {/* The Rune Pool (165) — the floating Energy and Power you can actually
-          spend. Power used to appear only when non-zero, which hid the whole
-          second resource: you cannot plan to recycle for Power if you have
-          never seen a Power counter. Both slots are always on screen now. */}
-      <div className="flex flex-col gap-1 shrink-0 order-1">
-        <span className="hud-label">{t('board.runePool')}</span>
-        <div className="flex gap-1.5">
-          <div
-            className="flex items-baseline gap-1 px-2 py-1 border border-accent/60 bg-accent/10 tabular-nums"
-            title={t('rune.energyTip')}
-          >
-            <span className="text-accent text-lg font-bold leading-none">⚡{pool.energy}</span>
-          </div>
-          <div
-            className={clsx(
-              'flex items-baseline gap-1 px-2 py-1 border tabular-nums transition-colors',
-              pool.power > 0
-                ? 'border-gold/70 bg-gold/10'
-                : 'border-line/60 bg-black/20',
-            )}
-            title={t('rune.powerTip')}
-          >
-            <span
-              className={clsx(
-                'text-lg font-bold leading-none',
-                pool.power > 0 ? 'text-gold' : 'text-txtFaint',
-              )}
-            >
-              ◈{pool.power}
-            </span>
-          </div>
-        </div>
-        <span className="text-micro text-txtFaint">{t('board.ready', { n: readyCount })}</span>
       </div>
     </div>
   )
