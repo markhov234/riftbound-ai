@@ -40,7 +40,7 @@ function isNeutral(s: string): boolean {
     .replace(/\[[^\]]*\]/g, '')
     .replace(/:rb_[a-z0-9_]+:/gi, '')
     .replace(/&gt;|&lt;|&quot;/gi, '')
-    .replace(/[\s.,:;—–-]/g, '')
+    .replace(/[\s.,:;()—–-]/g, '')
   return stripped === ''
 }
 
@@ -98,6 +98,13 @@ const TARGETS: [RegExp, string][] = [
   [/^a friendly gear$/i, '내 장비 하나'],
   [/^an? enemy gear$/i, '상대 장비 하나'],
   [/^a unit at a battlefield$/i, '전장에 있는 유닛 하나'],
+  [/^a unit at a battlefield with (\d+) :rb_might: or less$/i, '전장에 있는 위력 $1 이하의 유닛 하나'],
+  [/^a unit with (\d+) :rb_might: or less$/i, '위력 $1 이하의 유닛 하나'],
+  [/^a unit that'?s \[empowered\]$/i, '[Empowered] 유닛 하나'],
+  [/^another unit$/i, '다른 유닛 하나'],
+  [/^a friendly gear here$/i, '여기 있는 내 장비 하나'],
+  [/^a non-token unit$/i, '토큰이 아닌 유닛 하나'],
+  [/^each unit here$/i, '여기 있는 각 유닛'],
   [/^a unit here$/i, '여기 있는 유닛 하나'],
   [/^an? enemy unit here$/i, '여기 있는 상대 유닛 하나'],
   [/^a friendly unit here$/i, '여기 있는 내 유닛 하나'],
@@ -141,6 +148,51 @@ function place(s: string): string | null {
 type Rule = [RegExp, (m: RegExpMatchArray) => string | null]
 
 const EFFECTS: Rule[] = [
+  // ── Part 2.71: the recurring tail, measured with scripts/i18n-misses.mts ──
+  [/^return (.+?) to (?:its|their) owner'?s hand$/i,
+   (m) => { const t = target(m[1]); return t && `${obj(t)} 주인의 손으로 되돌립니다` }],
+  [/^give (.+?) \+(\d+) :rb_might: this turn and (.+?) -(\d+) :rb_might: this turn$/i,
+   (m) => {
+     const a = target(m[1])
+     const b = target(m[3])
+     return a && b && `이번 턴 ${a}에게 위력 +${m[2]}${numObj(m[2]).slice(-1)} 주고, ${b}에게 위력 -${m[4]}${numObj(m[4]).slice(-1)} 줍니다`
+   }],
+  [/^if a player would score (\d+) point from conquering or holding during their first or second turn, they draw (\d+) instead$/i,
+   (m) => `플레이어가 자신의 첫 번째 또는 두 번째 턴에 점령이나 유지로 ${m[1]}점을 얻게 될 경우, 대신 카드 ${m[2]}장을 뽑습니다`],
+  [/^put (\d+) into your hand and recycle the rest$/i,
+   (m) => `그중 ${m[1]}장을 손패에 넣고 나머지는 재활용합니다`],
+  [/^disempower (.+)$/i, (m) => { const t = target(m[1]); return t && `${obj(t)} 강화 해제합니다` }],
+  [/^empower it at end of turn$/i, () => '턴 종료 시 그것을 강화합니다'],
+  [/^banish a card(?: you own)?$/i, () => '카드 하나를 추방합니다'],
+  [/^banish a card from any trash$/i, () => '아무 무덤에서 카드 하나를 추방합니다'],
+  [/^banish a card from any trash to give (.+?) \[assault (\d+)\] this turn$/i,
+   (m) => { const t = target(m[1]); return t && `아무 무덤에서 카드 하나를 추방해, 이번 턴 ${t}에게 [Assault ${m[2]}]을 줍니다` }],
+  [/^move a unit with (\d+) :rb_might: or less$/i, (m) => `위력이 ${m[1]} 이하인 유닛 하나를 이동시킵니다`],
+  [/^ready up to (\d+) units?, gear,? and\/or runes?$/i, (m) => `유닛·장비·룬을 합쳐 최대 ${m[1]}개를 준비 상태로 되돌립니다`],
+  [/^i have \[assault (\d+)\]$/i, (m) => `나는 [Assault ${m[1]}]을 가집니다`],
+  [/^i have \[assault\] equal to the number of gear you control$/i,
+   () => '나는 내가 지배하는 장비의 수만큼 [Assault]를 가집니다'],
+  [/^\[stun\] (.+)$/i, (m) => { const t = target(m[1]); return t && `${obj(t)} [Stun] 상태로 만듭니다` }],
+
+  // costs
+  [/^this costs (:rb_[a-z0-9_]+:) less(?: if you control something that'?s \[empowered\])?$/i,
+   (m) => `이 카드의 비용이 ${m[1]} 만큼 줄어듭니다`],
+  [/^your spells cost (:rb_[a-z0-9_]+:) less, to a minimum of (:rb_[a-z0-9_]+:)$/i,
+   (m) => `내 주문의 비용이 ${m[1]} 만큼 줄어듭니다. 최소 ${m[2]}입니다`],
+  [/^your next card costs (:rb_[a-z0-9_]+:) less$/i, (m) => `다음에 내는 카드의 비용이 ${m[1]} 만큼 줄어듭니다`],
+  [/^during showdowns here, cards with \[reaction\] cost (:rb_[a-z0-9_]+:) more to play$/i,
+   (m) => `여기서 대결이 벌어지는 동안, [Reaction] 카드의 비용이 ${m[1]} 만큼 늘어납니다`],
+  [/^as an additional cost to play this, you may discard (\d+)$/i,
+   (m) => `이 카드를 내는 추가 비용으로 카드 ${m[1]}장을 버릴 수 있습니다`],
+  [/^if you paid the additional cost, deal (\d+) to it instead$/i,
+   (m) => `추가 비용을 지불했다면, 대신 그것에게 피해 ${m[1]}을 줍니다`],
+  [/^if this is \[empowered\], \[add\] (:rb_[a-z0-9_]+:) instead$/i,
+   (m) => `이 카드가 [Empowered]라면, 대신 ${m[1]}을 [Add]합니다`],
+
+  // modal
+  // `normaliseNumbers` rewrites the word "one" to "1" before any rule sees the
+  // sentence, so a literal /choose one/ can never match. Accept both.
+  [/^choose (?:one|1) ?—?\s*(.+)$/i, (m) => { const e = translateEffect(m[1]); return e && `하나를 선택합니다 — ${e}` }],
   // ── Added to lift Korean coverage: the recurring shapes from the pool ──
   [/^they reveal their hand$/i, () => '그 플레이어는 손패를 공개합니다'],
   [/^you can look at their facedown cards this turn$/i, () => '이번 턴 동안 상대의 뒷면 카드를 볼 수 있습니다'],
@@ -545,6 +597,12 @@ const TRIGGERS: [RegExp, string][] = [
   [/^when a player plays a unit here,?$/i, '플레이어가 여기에 유닛을 낼 때,'],
   [/^the first time a player plays a non-token unit here each turn,?$/i, '매 턴 플레이어가 여기에 토큰이 아닌 유닛을 처음 낼 때,'],
   [/^when a unit here is returned to a player'?s hand,?$/i, '여기 있는 유닛이 주인의 손으로 돌아갈 때,'],
+  [/^when you banish a card you own,?$/i, '내가 소유한 카드를 추방할 때,'],
+  [/^when you choose or ready me,?$/i, '나를 지정하거나 준비 상태로 만들 때,'],
+  [/^when i become \[?empowered\]?,?$/i, '내가 [Empowered] 상태가 될 때,'],
+  [/^when combat starts here,?$/i, '여기서 전투가 시작될 때,'],
+  [/^when you play me from face down,?$/i, '내가 뒷면에서 나올 때,'],
+  [/^when you play your first card each turn,?$/i, '매 턴 내가 첫 카드를 낼 때,'],
   [/^when you play me,?$/i, '내가 나올 때,'],
   [/^when you play this,?$/i, '이 카드가 나올 때,'],
   [/^when i enter,?$/i, '내가 등장할 때,'],
@@ -561,6 +619,144 @@ const TRIGGERS: [RegExp, string][] = [
   [/^if you do,?$/i, '그렇게 했다면,'],
   [/^you may$/i, '~할 수 있습니다:'],
 ]
+
+// ── Reminder text ──────────────────────────────────────────────────────────
+
+/**
+ * Parenthesised reminder text is the rules blurb a card prints for a keyword it
+ * carries — "[Action] (Play any time, even before spells and abilities
+ * resolve.)". It was previously **dropped** from the Korean line on the grounds
+ * that the glossary already explains the keyword. That left a Korean reader
+ * looking at nothing where an English reader gets a full explanation, and it is
+ * a third of all the text on the cards: 133 of 398 sentences in the pool.
+ *
+ * It is also the easiest third. Reminder text is boilerplate — the same wording
+ * on every card carrying the keyword — so this is a lookup table, not grammar.
+ * 50 shapes cover all 133 sentences. \`$1\`… are the capture groups, which is how
+ * one entry serves "[Deflect 1]" and "[Deflect 2]".
+ *
+ * Anything not matched here is still dropped rather than shown in English: a
+ * reminder is redundant with the keyword gloss, so losing one costs little,
+ * while a half-English parenthetical is exactly the noise the Korean line is
+ * meant to avoid.
+ */
+const REMINDERS: [RegExp, string][] = [
+  // Timing keywords
+  [/^play any time, even before spells and abilities resolve\.?$/i,
+   '주문과 능력이 해결되기 전을 포함해 언제든지 낼 수 있습니다.'],
+  [/^play on your turn or in showdowns\.?$/i,
+   '내 턴이나 대결 중에 낼 수 있습니다.'],
+  [/^hidden cards have \[reaction\]\.?$/i,
+   '숨겨진 카드는 [Reaction]을 가집니다.'],
+  [/^abilities that add resources can'?t be reacted to\.?$/i,
+   '자원을 추가하는 능력에는 반응할 수 없습니다.'],
+
+  // Hidden / Flow
+  [/^hide now for (.+?) to react with later for (.+?)\.?$/i,
+   '지금 $1를 내고 숨긴 뒤, 나중에 $2로 반응할 수 있습니다.'],
+  [/^you may play (?:this|it) from your trash for its flow cost\. then banish it\.?$/i,
+   '내 무덤에서 Flow 비용으로 낼 수 있습니다. 그 뒤 추방됩니다.'],
+  [/^you must still pay its power cost\.?$/i,
+   '파워 비용은 그대로 지불해야 합니다.'],
+
+  // Shield-style taxes
+  [/^opponents must pay (.+?) to choose me with a spell or ability\.?$/i,
+   '상대가 주문이나 능력으로 나를 지정하려면 $1를 더 지불해야 합니다.'],
+
+  // Empower
+  // The two "Pay the cost:" wordings come first: the generic `(.+?):` rules
+  // below would otherwise capture the literal words "Pay the cost" into $1 and
+  // print them, in English, inside an otherwise Korean sentence.
+  [/^pay the cost: empower me\. use only if not empowered\.?$/i,
+   '비용을 지불합니다: 나를 강화합니다. 강화되지 않았을 때만 사용합니다.'],
+  [/^pay the cost: empower this\. use only if not empowered\.?$/i,
+   '비용을 지불합니다: 이 카드를 강화합니다. 강화되지 않았을 때만 사용합니다.'],
+  [/^(.+?): empower me\. use only if not empowered\.?$/i,
+   '$1: 나를 강화합니다. 강화되지 않았을 때만 사용합니다.'],
+  [/^(.+?): empower this\. use only if not empowered\.?$/i,
+   '$1: 이 카드를 강화합니다. 강화되지 않았을 때만 사용합니다.'],
+  [/^it becomes empowered if it'?s not already\.?$/i,
+   '아직 강화되지 않았다면 강화됩니다.'],
+  [/^i become empowered if i'?m not already\.?$/i,
+   '내가 아직 강화되지 않았다면 강화됩니다.'],
+
+  // Combat modifiers
+  [/^\+(\d+) (.+?) while it'?s an attacker\.?$/i, '공격자인 동안 $2 +$1.'],
+  [/^\+(\d+) (.+?) while i'?m an attacker\.?$/i, '내가 공격자인 동안 $2 +$1.'],
+  [/^\+(\d+) (.+?) while it'?s a defender\.?$/i, '방어자인 동안 $2 +$1.'],
+  [/^\+(\d+) (.+?) while they'?re defenders\.?$/i, '방어자인 동안 $2 +$1.'],
+  [/^\+(\d+) (.+?) while i'?m an attacker for each instance of assault\.?$/i,
+   '[Assault] 하나당, 내가 공격자인 동안 $2 +$1.'],
+  [/^\+(\d+) (.+?) while it'?s a defender\. it must be assigned combat damage first\.?$/i,
+   '방어자인 동안 $2 +$1. 전투 피해를 가장 먼저 할당받아야 합니다.'],
+  [/^i must be assigned combat damage last\.?$/i,
+   '나는 전투 피해를 가장 나중에 할당받아야 합니다.'],
+  [/^it doesn'?t deal combat damage this turn\.?$/i,
+   '이번 턴에 전투 피해를 주지 않습니다.'],
+  [/^this includes attackers\.?$/i, '공격자도 포함됩니다.'],
+  [/^each instance of damage the spell deals is increased by (\d+)\.?$/i,
+   '그 주문이 주는 각 피해가 $1씩 증가합니다.'],
+
+  // Movement
+  [/^i can move from battlefield to battlefield\.?$/i,
+   '나는 전장에서 전장으로 이동할 수 있습니다.'],
+  [/^they can move from battlefield to battlefield\.?$/i,
+   '전장에서 전장으로 이동할 수 있습니다.'],
+  [/^send it to base\. this isn'?t a move\.?$/i,
+   '기지로 보냅니다. 이것은 이동이 아닙니다.'],
+  [/^i enter exhausted\.?$/i, '나는 소진된 채로 등장합니다.'],
+  [/^you may pay (.+?) as an additional cost to have me enter ready\.?$/i,
+   '추가 비용으로 $1를 지불하면 준비된 채로 등장시킬 수 있습니다.'],
+
+  // Deck manipulation
+  [/^put the top (\d+) cards? of your main deck into your trash\.?$/i,
+   '내 메인 덱 맨 위 카드 $1장을 무덤에 넣습니다.'],
+  [/^they put the top card of their main deck into their trash\.?$/i,
+   '자신의 메인 덱 맨 위 카드 1장을 무덤에 넣습니다.'],
+  [/^to burn (\d+), put the top card of your main deck into your trash\.?$/i,
+   '[Burn $1]을 하려면, 내 메인 덱 맨 위 카드 1장을 무덤에 넣습니다.'],
+  [/^to burn (\d+), they put the top (\d+) cards? of their main deck into their trash\.?$/i,
+   '[Burn $1]을 하려면, 자신의 메인 덱 맨 위 카드 $2장을 무덤에 넣습니다.'],
+  [/^look at the top card of your main deck\. you may recycle it\.?$/i,
+   '내 메인 덱 맨 위 카드를 봅니다. 그 카드를 재활용할 수 있습니다.'],
+
+  // Buffs / status
+  [/^give it a \+(\d+) (.+?) buff if it doesn'?t have one\.?$/i,
+   '버프가 없다면 $2 +$1 버프를 줍니다.'],
+  [/^if it doesn'?t have a buff, it gets a \+(\d+) (.+?) buff\.?$/i,
+   '버프가 없다면 $2 +$1 버프를 얻습니다.'],
+  [/^a unit is mighty while it has (\d+)\+ (.+?)\.?$/i,
+   '유닛은 $2가 $1 이상인 동안 Mighty입니다.'],
+  [/^units with (\d+) (.+?) can conquer and hold\.?$/i,
+   '$2가 $1인 유닛도 점령하고 유지할 수 있습니다.'],
+  [/^it'?s alone if there are no other friendly units here\.?$/i,
+   '여기에 다른 내 유닛이 없다면 혼자입니다.'],
+
+  // Misc timing
+  [/^this happens before scoring\.?$/i, '이것은 점수 획득보다 먼저 일어납니다.'],
+  [/^kill me at the start of your beginning phase, before scoring\.?$/i,
+   '내 시작 단계가 시작될 때, 점수 획득보다 먼저 나를 파괴합니다.'],
+  [/^when i die, get the effects\.?$/i, '내가 죽을 때 그 효과를 받습니다.'],
+  [/^you may pay the additional cost to repeat the spell'?s effect\.?$/i,
+   '추가 비용을 지불하면 그 주문의 효과를 한 번 더 반복할 수 있습니다.'],
+  // A granted ability, quoted verbatim inside the reminder (Zed's Death Mark).
+  // The card API returns the quote marks as `&quot;`; `CardRulesText` decodes
+  // them before we see them, but the fixtures do not, so accept either form.
+  [/^it has (?:&quot;|")when i attack, you may banish a unit from your trash\. if you do, give me \[assault (\d+)\] this turn\.(?:&quot;|")$/i,
+   '“내가 공격할 때, 내 무덤에서 유닛 하나를 추방할 수 있습니다. 그렇게 했다면, 이번 턴에 나에게 [Assault $1]을 줍니다.” 능력을 가집니다.'],
+  [/^(.+?): attach this to a unit you control\.?$/i,
+   '$1: 이 장비를 내 유닛 하나에 부착합니다.'],
+]
+
+/** Korean for one parenthesised reminder, or null to keep dropping it. */
+function translateReminder(s: string): string | null {
+  const inner = s.replace(/^\(\s*/, '').replace(/\s*\)$/, '').trim()
+  for (const [re, ko] of REMINDERS) {
+    const m = inner.match(re)
+    if (m) return '(' + ko.replace(/\$(\d)/g, (_, d) => m[Number(d)] ?? '') + ')'
+  }
+  return null
+}
 
 // ── Sentence assembly ──────────────────────────────────────────────────────
 
@@ -636,7 +832,13 @@ function translateSentence(s: string): string | null {
   const kw = body.match(/^((?:\[[^\]]+\]|&gt;|\s)+)(.+)$/)
   if (kw && /\[/.test(kw[1]) && kw[2].trim()) {
     const rest = translateSentence(kw[2].trim() + end)
-    return rest && `${kw[1].trim()} ${rest}`
+    if (rest) return `${kw[1].trim()} ${rest}`
+    // Fall through rather than giving up. Returning null here made every
+    // EFFECTS rule whose pattern *starts* with a keyword unreachable — the peel
+    // stripped "[Stun]", failed to translate the bare "a unit", and answered for
+    // the whole sentence. `[stun] a unit` and `[stun] it` had been dead since
+    // they were written. The last thing this function does is try the full body
+    // against EFFECTS, which is exactly what those rules need.
   }
 
   // "<cost>: <effect>" — an activated ability. Costs are a mix of symbols and
@@ -660,7 +862,10 @@ function translateSentence(s: string): string | null {
     for (const [re, ko] of TRIGGERS) {
       if (re.test(comma[1].trim())) {
         const rest = translateSentence(comma[2] + end)
-        return rest && `${ko} ${rest}`
+        // Same fall-through as the keyword peel: a recognised trigger whose body
+        // has no rule must not veto a rule for the sentence as a whole.
+        if (rest) return `${ko} ${rest}`
+        break
       }
     }
   }
@@ -740,9 +945,14 @@ function pushSentences(chunk: string, out: { text: string; reminder: boolean }[]
  */
 export function translateCardText(text: string): CardTextSegment[] {
   return segments(text).map(({ text: s, reminder }) => {
-    // Reminder text restates a keyword the glossary already covers in Korean —
-    // translating it again adds noise, so it is dropped from the Korean line.
-    if (reminder) return { text: s, translated: false, reminder: true, neutral: false }
+    // Reminder text is boilerplate for a keyword the card carries. Translating
+    // it is a table lookup, and it is a third of everything printed on a card —
+    // so it is translated where a rule exists, and only dropped where none does.
+    if (reminder) {
+      if (isNeutral(s)) return { text: s, translated: false, reminder: true, neutral: true }
+      const ko = translateReminder(s)
+      return { text: ko ?? s, translated: ko !== null, reminder: true, neutral: false }
+    }
     if (isNeutral(s)) return { text: s, translated: false, reminder: false, neutral: true }
     const ko = translateSentence(s)
     return { text: ko ?? s, translated: ko !== null, reminder: false, neutral: false }
@@ -756,7 +966,10 @@ export function translateCardText(text: string): CardTextSegment[] {
  * could be — the caller then just shows the English.
  */
 export function cardTextKo(text: string): string | null {
-  const segs = translateCardText(text).filter((s) => !s.reminder)
+  // A reminder survives only if it is *in Korean*. An untranslated one is
+  // redundant with the keyword's own Korean gloss, and leaving it in English
+  // is the noise this line exists to remove.
+  const segs = translateCardText(text).filter((s) => !s.reminder || s.translated)
   if (!segs.some((s) => s.translated)) return null
   return segs.map((s) => s.text).join(' ')
 }

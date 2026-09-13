@@ -92,9 +92,13 @@ describe('card text translation', () => {
     expect(cardTextKo('The clockwork owl recites a limerick about turnips.')).toBeNull()
   })
 
-  it('drops reminder parentheticals from the Korean line', () => {
+  it('renders a reminder parenthetical in Korean, never in English', () => {
+    // This used to assert the reminder was *dropped*. It now has a rule, so it
+    // comes back in Korean — and the old assertion ("the English is absent")
+    // passed either way, which is why the name had gone stale without failing.
     const ko = cardTextKo('Units here have [Ganking]. (They can move from battlefield to battlefield.)')!
     expect(ko).not.toContain('They can move')
+    expect(ko).toContain('전장에서 전장으로 이동할 수 있습니다')
     expect(ko).toContain('[Ganking]')
   })
 
@@ -108,6 +112,53 @@ describe('card text translation', () => {
       expect(ko, c.name).not.toMatch(/[가-힣]니다고/)
       expect(ko, c.name).not.toContain('(으)로')
     }
+  })
+
+  it('translates keyword reminder text rather than dropping it', () => {
+    // Reminder text is a third of everything printed on the cards (133 of 398
+    // sentences in the pool). It used to be dropped from the Korean line, which
+    // left a Korean reader with nothing where an English reader gets the rules
+    // explained. It is boilerplate, so it is a table, not grammar.
+    expect(cardTextKo('[Action] (Play on your turn or in showdowns.)Draw 1.')).toBe(
+      '[Action] (내 턴이나 대결 중에 낼 수 있습니다.) 카드 1장을 뽑습니다.',
+    )
+    // The capture groups are what let one entry serve every cost.
+    expect(cardTextKo('[Deflect] (Opponents must pay :rb_energy_2: to choose me with a spell or ability.)Draw 1.'))
+      .toContain(':rb_energy_2:를 더 지불해야')
+  })
+
+  it('prefers the specific reminder rule over the generic one', () => {
+    // Ordered the other way, the generic `<cost>: Empower this` rule captured
+    // the literal words "Pay the cost" into $1 and printed them in English
+    // inside an otherwise Korean sentence.
+    const ko = cardTextKo('(Pay the cost: Empower this. Use only if not Empowered.)Draw 1.')
+    expect(ko).toContain('비용을 지불합니다')
+    expect(ko).not.toContain('Pay the cost')
+  })
+
+  it('reaches rules whose pattern starts with a keyword', () => {
+    // Regression: the keyword peel stripped "[Stun]", failed to translate the
+    // bare "a unit", and answered null for the whole sentence — so every
+    // EFFECTS rule beginning with a keyword was unreachable. `[stun] a unit`
+    // and `[stun] it` had been dead code since they were written.
+    expect(cardTextKo('[Stun] a unit.')).toBe('유닛 하나를 [Stun] 상태로 만듭니다.')
+    expect(cardTextKo('[Stun] it.')).toBe('그것을 [Stun] 상태로 만듭니다.')
+    // The peel itself still works when the remainder is what carries the rule.
+    expect(cardTextKo('[Ganking]Recycle 1.')).toBe('[Ganking] 무덤에서 1장을 재활용합니다.')
+  })
+
+  it('matches rules written against number words, which are normalised to digits', () => {
+    // `normaliseNumbers` rewrites "one" → "1" before any rule runs, so a rule
+    // spelled /choose one/ can never fire. Both spellings are accepted.
+    expect(cardTextKo('Choose one —Empower a unit.')).toBe('하나를 선택합니다 — 유닛 하나를 강화합니다.')
+  })
+
+  it('leaves an unmatched reminder out rather than showing it in English', () => {
+    // A reminder restates a keyword the glossary already glosses in Korean, so
+    // dropping one costs little — while a half-English parenthetical is exactly
+    // the noise the Korean line exists to remove.
+    const ko = cardTextKo('(Some reminder with no rule yet.)Draw 1.')
+    expect(ko).toBe('카드 1장을 뽑습니다.')
   })
 
   it('holds its measured coverage of the real card pool', () => {
@@ -127,7 +178,28 @@ describe('card text translation', () => {
     // single rule changing, because that list is mostly Vendetta/Unleashed
     // cards whose wordings have no templates yet. Lowered deliberately — if it
     // drops again with the pool unchanged, that is a real regression.
+    //
+    // `cardTextCoverage` counts **prose only** — reminder text has its own
+    // floor below, since the two are translated by different machinery and a
+    // regression in one should not be masked by the other.
     expect(total).toBeGreaterThan(200)
-    expect(translated / total).toBeGreaterThan(0.60)
+    expect(translated / total).toBeGreaterThan(0.69)
+  })
+  it('holds full reminder-text coverage of the real card pool', () => {
+    let total = 0
+    let translated = 0
+    for (const c of POOL) {
+      if (!c.text) continue
+      for (const seg of translateCardText(c.text)) {
+        if (!seg.reminder || seg.neutral) continue
+        total++
+        if (seg.translated) translated++
+      }
+    }
+    expect(total).toBeGreaterThan(100)
+    // Reminder text is a closed set of boilerplate — 50 shapes cover the whole
+    // pool — so unlike prose this can and should stay at 100%. A new card with
+    // a new keyword blurb fails here, which is the point: it is one table entry.
+    expect(translated, `${total - translated} reminder shapes need a rule`).toBe(total)
   })
 })
