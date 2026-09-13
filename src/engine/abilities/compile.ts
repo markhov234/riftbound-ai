@@ -37,7 +37,7 @@ import { isEmpowered, legionActive, levelActive } from './statuses'
 import type { Cost } from '../runes'
 import { TargetSpec } from './targets'
 import { ActivatedAbility, CardScript, TriggeredAbility } from './types'
-import { GameState, UnitInPlay } from '../../types/game'
+import { EngineEvent, GameState, UnitInPlay } from '../../types/game'
 
 /**
  * A best-effort compiler from a card's printed rules text to an engine script.
@@ -789,10 +789,19 @@ function textTriggers(card: Card): TriggeredAbility[] {
       const inner = eff
       eff = (ctx) => (gearCount(ctx.state, ctx.controller) >= need ? inner(ctx) : ctx.state)
     }
+    // "When I move to a battlefield, …" — the destination is part of the
+    // trigger, not flavour. The phrase regex swallowed those four words and
+    // the ability fired on any move, so a retreat home paid out too.
+    const toBattlefield =
+      p.on === 'UNIT_MOVED' && /to a battlefield/i.test(m[0])
+        ? (ev: EngineEvent) => ev.type === 'UNIT_MOVED' && ev.to.kind === 'battlefield'
+        : undefined
+
     out.push({
       on: p.on,
       self: p.self,
       byController: p.byController,
+      condition: toBattlefield,
       targets: compileTargets(rest),
       effect: eff,
     })

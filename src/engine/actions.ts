@@ -263,6 +263,12 @@ export function canPlay(
   return { ok: true }
 }
 
+function sameLocation(a: UnitLocation, b: UnitLocation): boolean {
+  return a.kind === 'base'
+    ? b.kind === 'base'
+    : b.kind === 'battlefield' && a.index === b.index
+}
+
 export function canMove(
   state: GameState,
   side: PlayerSide,
@@ -279,6 +285,15 @@ export function canMove(
   if (unit.exhausted) return { ok: false, reason: 'unit is exhausted' }
   if (unit.sick && !canActWhenSick(state, unit)) {
     return { ok: false, reason: 'unit has summoning sickness' }
+  }
+  // Moving to the zone you already occupy is not a move. Nothing in the rules
+  // makes it illegal because nothing in the rules describes it — but a move
+  // exhausts the unit and fires "when I move" triggers, so letting it through
+  // charged the full price of a move that never happened. Reported in play:
+  // a unit dragged at a battlefield, dropped back on the base it started on,
+  // came back exhausted and had banked the XP from "when I move".
+  if (to && sameLocation(to, unit.location)) {
+    return { ok: false, reason: 'already there' }
   }
   // Battlefield → battlefield needs Ganking; base ↔ battlefield is always fine.
   if (to && to.kind === 'battlefield' && unit.location.kind === 'battlefield' && !hasGanking(unit, state)) {

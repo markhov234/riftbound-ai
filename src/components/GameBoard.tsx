@@ -1996,14 +1996,14 @@ export default function GameBoard({ initialState, onExit }: Props) {
               Pool beneath it. The pool used to live in the hand band, which
               became absolute — so it floated over the legend and champion
               tiles. It belongs with the other standing information anyway. */}
-          <div className="flex flex-col min-h-0 shrink-0">
+          <div className="flex flex-col min-h-0 shrink-0 overflow-hidden">
             <LogPanel
               log={state.log}
               expanded={logExpanded}
               onToggle={() => setLogExpanded((v) => !v)}
             />
             {logExpanded && (
-              <div className="shrink-0 w-[clamp(220px,20vw,320px)] border-l border-t border-line bg-panel px-3 py-2 max-md:w-full max-md:border-l-0">
+              <div className="shrink-0 w-[clamp(220px,20vw,320px)] border-l border-t border-line bg-panel px-3 py-2 max-md:w-full max-md:border-l-0 max-h-[40%] overflow-y-auto max-md:max-h-none">
                 <RuneRail
                   pool={player.runes}
                   onRecycle={
@@ -3411,7 +3411,11 @@ function LogPanel({
   return (
     // Capped rather than full-height: a log that runs the whole board reads as
     // the main column. The list inside scrolls, so nothing is lost.
-    <div className="w-[clamp(220px,20vw,320px)] shrink-0 border-l border-line bg-panel flex flex-col min-h-0 max-h-[52vh] max-md:w-full max-md:border-l-0 max-md:border-t max-md:max-h-[34vh]">
+    //
+    // The cap is a share of the RAIL (60%), not of the viewport. A vh cap is a
+    // guess about the window: at 1440x720 the old max-h-[52vh] was 374px inside
+    // a 209px rail, and the overflow painted over the action bar.
+    <div className="w-[clamp(220px,20vw,320px)] shrink-0 border-l border-line bg-panel flex flex-col min-h-0 flex-1 max-h-[60%] max-md:w-full max-md:border-l-0 max-md:border-t max-md:max-h-[34vh] max-md:flex-none">
       <button
         onClick={onToggle}
         className="shrink-0 w-full flex items-center justify-between px-3 py-1.5 hud-label hover:text-accent border-b border-line"
