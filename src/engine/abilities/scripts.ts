@@ -775,11 +775,18 @@ export const CARD_SCRIPTS: Record<string, CardScript> = Object.fromEntries([
         byController: true,
         condition: (e, _s, src) =>
           e.type === 'CARD_PLAYED' && e.nth === 1 && !!src && src.location.kind === 'battlefield',
+        // Two Herons at battlefields are two ability sources and both fire, so
+        // both discounts apply to the same card. Assigning a flat
+        // `{ energy: 2, runes: 2 }` overwrote the first Heron's payout with an
+        // identical one, which made the second copy worth exactly nothing.
         effect: (ctx) =>
           appendLog(
             updatePlayer(ctx.state, ctx.controller, (ps) => ({
               ...ps,
-              nextCardDiscount: { energy: 2, runes: 2 },
+              nextCardDiscount: {
+                energy: (ps.nextCardDiscount?.energy ?? 0) + 2,
+                runes: (ps.nextCardDiscount?.runes ?? 0) + 2,
+              },
             })),
             'Astral Heron: your next card costs 2 energy and 2 runes less.',
           ),
