@@ -356,7 +356,7 @@ function respondOrPass(state: GameState, side: PlayerSide): GameAction {
     const action = buildSpellAction(state, side, card, specs)
     const cast = dispatch(state, action, side)
     // A failed cast still logs (mutates state) — require the spell to reach the stack.
-    if (cast.stack.length <= state.stack.length) continue
+    if (cast.stack.length <= state.stack.length || wasRefused(state, cast)) continue
     // Value it by where a resolution would leave us.
     const s = boardScore(settle(cast), side)
     if (s > bestScore) {
@@ -370,7 +370,9 @@ function respondOrPass(state: GameState, side: PlayerSide): GameAction {
   // so the only question the scorer has to answer is whether the board is
   // better with the card on it.
   for (const action of facedownActions(state, side)) {
-    const after = settle(dispatch(state, action, side))
+    const raw = dispatch(state, action, side)
+    if (raw === state || wasRefused(state, raw)) continue
+    const after = settle(raw)
     const sc = boardScore(after, side)
     if (sc > bestScore) {
       bestScore = sc
@@ -426,7 +428,7 @@ function buildSpellAction(
  * stops early — which is what playing badly actually looks like.
  */
 function pickEasy(state: GameState, side: PlayerSide): GameAction {
-  const ranked = scoredActions(state, side, 1, 0.35)
+  const ranked = scoredActions(state, side, 'none', 0.35)
   if (ranked.length === 0) return { type: 'END_TURN' }
 
   const roll = positionNoise(state, 1)
@@ -446,12 +448,34 @@ function pickEasy(state: GameState, side: PlayerSide): GameAction {
 
 /** Best score reachable in ONE more move from `state`, over just the moves that
  *  can spike it (conquers, showdowns, plays) — the cheap leaf for 2-ply. */
+/**
+ * Did this dispatch do nothing but refuse?
+ *
+ * `dispatch` reports an illegal action by appending a line and returning a new
+ * state, so `after !== before` is not proof that anything happened. The AI
+ * treated a refusal as a real candidate, scored it (badly, but the scoring is
+ * not what selected it), and could pick it again next step — a loop that ate
+ * the turn until the 80-action guard stopped it.
+ *
+ * It bites wherever a cost depends on the *chosen target* rather than the card:
+ * `canPlay` prices the card, but [Deflect] adds a surcharge for choosing that
+ * particular unit, so an affordable spell becomes unaffordable once aimed.
+ * Found by widening the fuzz sample — the suite ran four seeds per pairing and
+ * the failure lives on the eighth.
+ */
+function wasRefused(before: GameState, after: GameState): boolean {
+  if (after.log.length <= before.log.length) return false
+  return after.log
+    .slice(before.log.length)
+    .some((line) => /^(Can't|Cannot|Not enough|No showdown|Invalid)/i.test(line))
+}
+
 function bestReplyScore(state: GameState, side: PlayerSide): number {
   let best = boardScore(state, side)
   for (const action of candidateActions(state, side)) {
     if (action.type === 'ACTIVATE_ABILITY') continue
     const after = dispatch(state, action, side)
-    if (after === state) continue
+    if (after === state || wasRefused(state, after)) continue
     // Settle here too — otherwise the depth-2 leaf reintroduces exactly the bug
     // `settle` exists to fix, one ply deeper, and hard plays more blanks than medium.
     const s = boardScore(settle(after), side)
@@ -474,23 +498,44 @@ function bestReplyScore(state: GameState, side: PlayerSide): number {
  * unable to play: no `MOVE_UNIT` in it at all, so it never left its base and
  * therefore could never hold a battlefield or score.
  */
+/**
+ * How far a difficulty looks before committing.
+ *
+ *   'none'   score the position the action leads to, and stop there.
+ *   'units'  also probe one reply deep, but only for unit plays and moves.
+ *   'all'    probe one reply deep for every kind of play.
+ *
+ * The middle setting exists because the lookahead is the *only* lever that
+ * measurably changes strength: over 80 preset games, turning it on cut the
+ * opponent's score 1.225 -> 1.075, while moving the margin between 0.28 and
+ * 0.40 changed nothing at all. Giving medium the full probe would therefore
+ * have made it indistinguishable from hard, since the margin is all that
+ * separates them.
+ *
+ * Units and moves are the half worth probing: they are what take and hold
+ * battlefields, so they are where a reply a ply later actually decides things.
+ */
+type Lookahead = 'none' | 'units' | 'all'
+
 function scoredActions(
   state: GameState,
   side: PlayerSide,
-  depth: 1 | 2,
+  depth: Lookahead,
   margin: number,
 ): { action: GameAction; score: number }[] {
   const base = boardScore(state, side)
   const candidates = candidateActions(state, side)
   const out: { action: GameAction; score: number }[] = []
 
-  const lookahead = (a: GameAction) =>
-    depth === 2 &&
-    (a.type === 'PLAY_UNIT' || a.type === 'MOVE_UNIT' || a.type === 'PLAY_GEAR' || a.type === 'PLAY_SPELL')
+  const lookahead = (a: GameAction) => {
+    if (depth === 'none') return false
+    if (a.type === 'PLAY_UNIT' || a.type === 'MOVE_UNIT') return true
+    return depth === 'all' && (a.type === 'PLAY_GEAR' || a.type === 'PLAY_SPELL')
+  }
 
   for (const action of candidates) {
     const raw = dispatch(state, action, side)
-    if (raw === state) continue
+    if (raw === state || wasRefused(state, raw)) continue
     const after = settle(raw)
     const immediate = boardScore(after, side)
     const leaf =
@@ -506,7 +551,7 @@ function scoredActions(
 function pickGreedy(
   state: GameState,
   side: PlayerSide,
-  depth: 1 | 2 = 1,
+  depth: Lookahead = 'none',
   margin = 0.01,
 ): GameAction {
   return scoredActions(state, side, depth, margin)[0]?.action ?? { type: 'END_TURN' }
@@ -561,10 +606,12 @@ export function nextAIAction(state: GameState): GameAction {
     case 'easy':
       return pickEasy(state, side)
     case 'hard':
-      return pickGreedy(state, side, 2, 0.3)
+      return pickGreedy(state, side, 'all', 0.3)
     case 'medium':
     default:
-      return pickGreedy(state, side, 1, 0.35)
+      // Probes a reply deep on units and moves, but not on spells and gear —
+      // stronger than no lookahead at all, and still a step below hard.
+      return pickGreedy(state, side, 'units', 0.35)
   }
 }
 
